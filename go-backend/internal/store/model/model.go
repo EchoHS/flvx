@@ -45,6 +45,8 @@ type Forward struct {
 	Inx           int           `gorm:"not null;default:0"`
 	SpeedID       sql.NullInt64 `gorm:"column:speed_id"`
 	MaxConn       int           `gorm:"column:max_conn;not null;default:0"`
+	IPMaxConn     int           `gorm:"column:ip_max_conn;not null;default:0"`
+	IPSpeedID     sql.NullInt64 `gorm:"column:ip_speed_id"`
 	ProxyProtocol int           `gorm:"column:proxy_protocol;not null;default:0"`
 }
 
@@ -428,20 +430,22 @@ type ChainTunnelBackup struct {
 }
 
 type ForwardBackup struct {
-	ID           int64                `json:"id"`
-	UserID       int64                `json:"userId"`
-	UserName     string               `json:"userName"`
-	Name         string               `json:"name"`
-	TunnelID     int64                `json:"tunnelId"`
-	RemoteAddr   string               `json:"remoteAddr"`
-	Strategy     string               `json:"strategy"`
-	InFlow       int64                `json:"inFlow"`
-	OutFlow      int64                `json:"outFlow"`
-	CreatedTime  int64                `json:"createdTime"`
-	UpdatedTime  int64                `json:"updatedTime"`
-	Status       int                  `json:"status"`
+	ID            int64                `json:"id"`
+	UserID        int64                `json:"userId"`
+	UserName      string               `json:"userName"`
+	Name          string               `json:"name"`
+	TunnelID      int64                `json:"tunnelId"`
+	RemoteAddr    string               `json:"remoteAddr"`
+	Strategy      string               `json:"strategy"`
+	InFlow        int64                `json:"inFlow"`
+	OutFlow       int64                `json:"outFlow"`
+	CreatedTime   int64                `json:"createdTime"`
+	UpdatedTime   int64                `json:"updatedTime"`
+	Status        int                  `json:"status"`
 	Inx           int                  `json:"inx"`
 	SpeedID       *int64               `json:"speedId,omitempty"`
+	IPMaxConn     int                  `json:"ipMaxConn,omitempty"`
+	IPSpeedID     *int64               `json:"ipSpeedId,omitempty"`
 	ForwardPorts  *[]ForwardPortBackup `json:"forwardPorts,omitempty"`
 	ProxyProtocol int                  `json:"proxyProtocol"`
 }
@@ -532,16 +536,18 @@ type ImportResult struct {
 
 // ForwardRecord is a minimal forward view used by control plane and flow policy.
 type ForwardRecord struct {
-	ID         int64
-	UserID     int64
-	UserName   string
-	Name       string
-	TunnelID   int64
-	RemoteAddr string
-	Strategy   string
+	ID            int64
+	UserID        int64
+	UserName      string
+	Name          string
+	TunnelID      int64
+	RemoteAddr    string
+	Strategy      string
 	Status        int
 	SpeedID       sql.NullInt64
 	MaxConn       int
+	IPMaxConn     int
+	IPSpeedID     sql.NullInt64
 	ProxyProtocol int
 }
 

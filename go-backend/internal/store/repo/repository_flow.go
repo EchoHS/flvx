@@ -124,6 +124,8 @@ func (r *Repository) ListActiveForwardsByUser(userID int64) ([]model.ForwardReco
 			Status:        f.Status,
 			SpeedID:       f.SpeedID,
 			MaxConn:       f.MaxConn,
+			IPMaxConn:     f.IPMaxConn,
+			IPSpeedID:     f.IPSpeedID,
 			ProxyProtocol: f.ProxyProtocol,
 		})
 	}
@@ -157,6 +159,8 @@ func (r *Repository) ListActiveForwardsByUserTunnel(userID, tunnelID int64) ([]m
 			Status:        f.Status,
 			SpeedID:       f.SpeedID,
 			MaxConn:       f.MaxConn,
+			IPMaxConn:     f.IPMaxConn,
+			IPSpeedID:     f.IPSpeedID,
 			ProxyProtocol: f.ProxyProtocol,
 		})
 	}
@@ -190,6 +194,8 @@ func (r *Repository) ListForwardsByUserAndTunnel(userID, tunnelID int64) ([]mode
 			Status:        f.Status,
 			SpeedID:       f.SpeedID,
 			MaxConn:       f.MaxConn,
+			IPMaxConn:     f.IPMaxConn,
+			IPSpeedID:     f.IPSpeedID,
 			ProxyProtocol: f.ProxyProtocol,
 		})
 	}
@@ -224,6 +230,8 @@ func (r *Repository) GetForwardRecord(forwardID int64) (*model.ForwardRecord, er
 		Status:        f.Status,
 		SpeedID:       f.SpeedID,
 		MaxConn:       f.MaxConn,
+		IPMaxConn:     f.IPMaxConn,
+		IPSpeedID:     f.IPSpeedID,
 		ProxyProtocol: f.ProxyProtocol,
 	}
 	if strings.TrimSpace(fr.Strategy) == "" {

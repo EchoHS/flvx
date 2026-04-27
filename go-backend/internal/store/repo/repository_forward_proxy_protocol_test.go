@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -148,6 +149,70 @@ func TestListActiveForwardsByUserTunnelIncludesMaxConn(t *testing.T) {
 	}
 	if records[0].MaxConn != 55 {
 		t.Fatalf("expected maxConn 55, got %d", records[0].MaxConn)
+	}
+}
+
+func TestForwardRepositoryPersistsPerIPLimits(t *testing.T) {
+	r, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	defer r.Close()
+
+	now := time.Now().UnixMilli()
+	forwardID, err := r.CreateForwardTx(1, "admin", "per-ip-forward", 2, "1.1.1.1:443", "fifo", now, 1, []int64{3}, 24000, "", nil, 0, 5, int64(21), 0)
+	if err != nil {
+		t.Fatalf("CreateForwardTx: %v", err)
+	}
+	record, err := r.GetForwardRecord(forwardID)
+	if err != nil {
+		t.Fatalf("GetForwardRecord after create: %v", err)
+	}
+	if record.IPMaxConn != 5 {
+		t.Fatalf("expected created ipMaxConn 5, got %d", record.IPMaxConn)
+	}
+	if !record.IPSpeedID.Valid || record.IPSpeedID.Int64 != 21 {
+		t.Fatalf("expected created ipSpeedId 21, got %+v", record.IPSpeedID)
+	}
+
+	if err := r.UpdateForward(forwardID, "per-ip-forward", 2, "2.2.2.2:443", "fifo", now+1, nil, 0, 9, int64(22), 0); err != nil {
+		t.Fatalf("UpdateForward: %v", err)
+	}
+	record, err = r.GetForwardRecord(forwardID)
+	if err != nil {
+		t.Fatalf("GetForwardRecord after update: %v", err)
+	}
+	if record.IPMaxConn != 9 {
+		t.Fatalf("expected updated ipMaxConn 9, got %d", record.IPMaxConn)
+	}
+	if !record.IPSpeedID.Valid || record.IPSpeedID.Int64 != 22 {
+		t.Fatalf("expected updated ipSpeedId 22, got %+v", record.IPSpeedID)
+	}
+
+	if err := r.DB().Create(&model.Forward{
+		UserID:      4,
+		UserName:    "user",
+		Name:        "listed-per-ip-forward",
+		TunnelID:    8,
+		RemoteAddr:  "3.3.3.3:443",
+		Strategy:    "fifo",
+		CreatedTime: now,
+		UpdatedTime: now,
+		Status:      1,
+		IPMaxConn:   11,
+		IPSpeedID:   sql.NullInt64{Int64: 33, Valid: true},
+	}).Error; err != nil {
+		t.Fatalf("create listed forward: %v", err)
+	}
+	records, err := r.ListForwardsByTunnel(8)
+	if err != nil {
+		t.Fatalf("ListForwardsByTunnel: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 listed record, got %d", len(records))
+	}
+	if records[0].IPMaxConn != 11 || !records[0].IPSpeedID.Valid || records[0].IPSpeedID.Int64 != 33 {
+		t.Fatalf("expected listed per-IP limits 11/33, got ipMaxConn=%d ipSpeedId=%+v", records[0].IPMaxConn, records[0].IPSpeedID)
 	}
 }
 

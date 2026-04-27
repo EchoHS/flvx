@@ -865,29 +865,33 @@ func (r *Repository) ListForwards() ([]map[string]interface{}, error) {
 	}
 
 	type fwdRow struct {
-		ID            int64
-		UserID        int64
-		UserName      string
-		Name          string
-		TunnelID      int64
-		TunnelName    string
-		TrafficRatio  float64
-		RemoteAddr    string
-		Strategy      string
-		InFlow        int64
-		OutFlow       int64
-		CreatedTime   int64
-		Status        int
-		Inx           int
-		SpeedID       sql.NullInt64
-		MaxConn       int
-		ProxyProtocol int
+		ID               int64
+		UserID           int64
+		UserName         string
+		Name             string
+		TunnelID         int64
+		TunnelName       string
+		TrafficRatio     float64
+		RemoteAddr       string
+		Strategy         string
+		InFlow           int64
+		OutFlow          int64
+		CreatedTime      int64
+		Status           int
+		Inx              int
+		SpeedID          sql.NullInt64
+		MaxConn          int
+		IPMaxConn        int
+		IPSpeedID        sql.NullInt64
+		IPSpeedLimitName string
+		ProxyProtocol    int
 	}
 
 	var rows []fwdRow
 	err := r.db.Model(&model.Forward{}).
-		Select("forward.id, forward.user_id, forward.user_name, forward.name, forward.tunnel_id, COALESCE(tunnel.name, '') AS tunnel_name, COALESCE(tunnel.traffic_ratio, 1.0) AS traffic_ratio, forward.remote_addr, COALESCE(forward.strategy, 'fifo') AS strategy, forward.in_flow, forward.out_flow, forward.created_time, forward.status, forward.inx, forward.speed_id, forward.max_conn, forward.proxy_protocol").
+		Select("forward.id, forward.user_id, forward.user_name, forward.name, forward.tunnel_id, COALESCE(tunnel.name, '') AS tunnel_name, COALESCE(tunnel.traffic_ratio, 1.0) AS traffic_ratio, forward.remote_addr, COALESCE(forward.strategy, 'fifo') AS strategy, forward.in_flow, forward.out_flow, forward.created_time, forward.status, forward.inx, forward.speed_id, forward.max_conn, forward.ip_max_conn, forward.ip_speed_id, COALESCE(ip_speed_limit.name, '') AS ip_speed_limit_name, forward.proxy_protocol").
 		Joins("LEFT JOIN tunnel ON tunnel.id = forward.tunnel_id").
+		Joins("LEFT JOIN speed_limit AS ip_speed_limit ON ip_speed_limit.id = forward.ip_speed_id").
 		Order("forward.inx ASC, forward.id ASC").
 		Find(&rows).Error
 	if err != nil {
@@ -909,10 +913,17 @@ func (r *Repository) ListForwards() ([]map[string]interface{}, error) {
 			"inFlow": row.InFlow, "outFlow": row.OutFlow,
 			"createdTime": row.CreatedTime, "status": row.Status, "inx": int64(row.Inx),
 			"maxConn":       row.MaxConn,
+			"ipMaxConn":     row.IPMaxConn,
 			"proxyProtocol": row.ProxyProtocol,
 		}
 		if row.SpeedID.Valid {
 			item["speedId"] = row.SpeedID.Int64
+		}
+		if row.IPSpeedID.Valid {
+			item["ipSpeedId"] = row.IPSpeedID.Int64
+		}
+		if strings.TrimSpace(row.IPSpeedLimitName) != "" {
+			item["ipSpeedLimitName"] = row.IPSpeedLimitName
 		}
 		items = append(items, item)
 	}
@@ -2102,7 +2113,16 @@ func (r *Repository) exportForwards() ([]model.ForwardBackup, error) {
 			TunnelID: f.TunnelID, RemoteAddr: f.RemoteAddr, Strategy: f.Strategy,
 			InFlow: f.InFlow, OutFlow: f.OutFlow, CreatedTime: f.CreatedTime,
 			UpdatedTime: f.UpdatedTime, Status: f.Status, Inx: f.Inx,
+			IPMaxConn:     f.IPMaxConn,
 			ProxyProtocol: f.ProxyProtocol,
+		}
+		if f.SpeedID.Valid {
+			v := f.SpeedID.Int64
+			b.SpeedID = &v
+		}
+		if f.IPSpeedID.Valid {
+			v := f.IPSpeedID.Int64
+			b.IPSpeedID = &v
 		}
 		ports, err := r.exportForwardPorts(f.ID)
 		if err != nil {
@@ -2483,6 +2503,13 @@ func importTunnels(tx *gorm.DB, tunnels []model.TunnelBackup, now int64) (int, e
 	return count, nil
 }
 
+func nullableBackupInt64(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
 func importForwards(tx *gorm.DB, forwards []model.ForwardBackup, now int64) (int, error) {
 	count := 0
 	for _, f := range forwards {
@@ -2500,13 +2527,16 @@ func importForwards(tx *gorm.DB, forwards []model.ForwardBackup, now int64) (int
 			UpdatedTime:   now,
 			Status:        f.Status,
 			Inx:           f.Inx,
+			SpeedID:       sql.NullInt64{Int64: nullableBackupInt64(f.SpeedID), Valid: f.SpeedID != nil && *f.SpeedID > 0},
+			IPMaxConn:     f.IPMaxConn,
+			IPSpeedID:     sql.NullInt64{Int64: nullableBackupInt64(f.IPSpeedID), Valid: f.IPSpeedID != nil && *f.IPSpeedID > 0},
 			ProxyProtocol: f.ProxyProtocol,
 		}
 		err := tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
 				"user_id", "user_name", "name", "tunnel_id", "remote_addr", "strategy",
-				"in_flow", "out_flow", "updated_time", "status", "inx", "proxy_protocol",
+				"in_flow", "out_flow", "updated_time", "status", "inx", "speed_id", "ip_max_conn", "ip_speed_id", "proxy_protocol",
 			}),
 		}).Create(&item).Error
 		if err != nil {

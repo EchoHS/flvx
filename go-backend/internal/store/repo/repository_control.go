@@ -55,6 +55,8 @@ func (r *Repository) ListForwardsByTunnelTx(tx *gorm.DB, tunnelID int64) ([]mode
 			Status:        f.Status,
 			SpeedID:       f.SpeedID,
 			MaxConn:       f.MaxConn,
+			IPMaxConn:     f.IPMaxConn,
+			IPSpeedID:     f.IPSpeedID,
 			ProxyProtocol: f.ProxyProtocol,
 		})
 	}

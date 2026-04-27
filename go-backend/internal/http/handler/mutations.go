@@ -1804,7 +1804,7 @@ func (h *Handler) forwardCreate(w http.ResponseWriter, r *http.Request) {
 	maxConn := asInt(req["maxConn"], 0)
 	proxyProtocol := asInt(req["proxyProtocol"], 0)
 
-	forwardID, err := h.repo.CreateForwardTx(userID, userName, name, tunnelID, remoteAddr, defaultString(asString(req["strategy"]), "fifo"), now, inx, entryNodes, port, inIp, nullableInt(speedID), maxConn, proxyProtocol)
+	forwardID, err := h.repo.CreateForwardTx(userID, userName, name, tunnelID, remoteAddr, defaultString(asString(req["strategy"]), "fifo"), now, inx, entryNodes, port, inIp, nullableInt(speedID), maxConn, 0, nil, proxyProtocol)
 	if err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
@@ -1958,7 +1958,7 @@ func (h *Handler) forwardUpdate(w http.ResponseWriter, r *http.Request) {
 	maxConn := asInt(req["maxConn"], forward.MaxConn)
 	proxyProtocol := asInt(req["proxyProtocol"], forward.ProxyProtocol)
 
-	if err := h.repo.UpdateForward(id, name, tunnelID, remoteAddr, strategy, now, newSpeedID, maxConn, proxyProtocol); err != nil {
+	if err := h.repo.UpdateForward(id, name, tunnelID, remoteAddr, strategy, now, newSpeedID, maxConn, 0, nil, proxyProtocol); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}
