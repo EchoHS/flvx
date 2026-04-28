@@ -26,6 +26,7 @@ import {
   importBackup,
   getAnnouncement,
   updateAnnouncement,
+  getStorageSummary,
   type AnnouncementData,
 } from "@/api";
 import { BackIcon, SettingsIcon } from "@/components/icons";
@@ -147,6 +148,14 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: "switch",
   },
   {
+    key: "monitor_retention_days",
+    label: "监控数据保留天数",
+    placeholder: "7",
+    description:
+      "统一清理节点指标、隧道流量、服务监控结果和隧道质量历史；默认 7 天。",
+    type: "input",
+  },
+  {
     key: "captcha_enabled",
     label: "启用验证码",
     description: "开启后，用户登录时需要完成验证码验证",
@@ -220,6 +229,7 @@ const getInitialConfigs = (): Record<string, string> => {
     "cloudflare_secret_key",
     "forward_compact_mode",
     "monitor_tunnel_quality_enabled",
+    "monitor_retention_days",
     "ip",
     "panel_domain",
     "app_logo",
@@ -288,6 +298,7 @@ export default function ConfigPage() {
   const [brandUploading, setBrandUploading] = useState<
     Partial<Record<BrandPreviewKey, boolean>>
   >({});
+  const [storageSummary, setStorageSummary] = useState("加载中...");
 
   const canGoBack =
     typeof window !== "undefined" &&
@@ -347,10 +358,26 @@ export default function ConfigPage() {
     }
   };
 
+  const loadStorageSummary = async () => {
+    try {
+      const response = await getStorageSummary();
+
+      if (response.code === 0 && response.data?.databaseSizeText) {
+        setStorageSummary(response.data.databaseSizeText);
+
+        return;
+      }
+      setStorageSummary("获取失败");
+    } catch {
+      setStorageSummary("获取失败");
+    }
+  };
+
   useEffect(() => {
     const timer = setTimeout(() => {
       loadConfigs(initialConfigs);
       loadAnnouncement();
+      loadStorageSummary();
     }, 100);
 
     return () => clearTimeout(timer);
@@ -1322,6 +1349,22 @@ export default function ConfigPage() {
                 开发版
               </SelectItem>
             </Select>
+          </div>
+
+          <Divider className="my-2" />
+
+          <div className="space-y-3">
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                数据库占用
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                当前后端数据库文件或实例占用空间，仅用于容量参考。
+              </p>
+            </div>
+            <div className="rounded-lg border border-divider bg-default-50/60 dark:bg-default-100/10 px-4 py-3 text-sm font-semibold text-default-800 dark:text-default-200">
+              {storageSummary}
+            </div>
           </div>
 
           <div className="flex justify-end pt-6 border-t border-divider/50 mt-4">

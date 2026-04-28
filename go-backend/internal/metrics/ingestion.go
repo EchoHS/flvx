@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"go-backend/internal/monitoring"
 	"go-backend/internal/store/model"
 	"go-backend/internal/store/repo"
 )
@@ -31,7 +32,6 @@ type IngestionService struct {
 	nodeBuffer    []*model.NodeMetric
 	nodeBufferMu  sync.Mutex
 	flushInterval time.Duration
-	retentionDays int
 }
 
 func NewIngestionService(repo *repo.Repository) *IngestionService {
@@ -39,7 +39,6 @@ func NewIngestionService(repo *repo.Repository) *IngestionService {
 		repo:          repo,
 		nodeBuffer:    make([]*model.NodeMetric, 0, 500),
 		flushInterval: 30 * time.Second,
-		retentionDays: 7,
 	}
 }
 
@@ -111,7 +110,22 @@ func (s *IngestionService) flushNodeMetrics() {
 }
 
 func (s *IngestionService) pruneMetrics() {
-	cutoff := time.Now().Add(-time.Duration(s.retentionDays) * 24 * time.Hour).UnixMilli()
+	s.pruneMetricsAt(time.Now())
+}
+
+func (s *IngestionService) retentionDaysFromConfig() int {
+	if s == nil || s.repo == nil {
+		return monitoring.DefaultMonitorRetentionDays
+	}
+	cfg, err := s.repo.GetConfigsByNames([]string{monitoring.ConfigMonitorRetentionDays})
+	if err != nil {
+		return monitoring.DefaultMonitorRetentionDays
+	}
+	return monitoring.MonitoringRetentionDaysFromConfigMap(cfg)
+}
+
+func (s *IngestionService) pruneMetricsAt(now time.Time) {
+	cutoff := now.Add(-time.Duration(s.retentionDaysFromConfig()) * 24 * time.Hour).UnixMilli()
 	if s.repo == nil {
 		return
 	}

@@ -105,6 +105,10 @@ func requiresAdmin(path string) bool {
 		return true
 	}
 
+	if strings.HasPrefix(path, "/api/v1/system/") {
+		return true
+	}
+
 	if strings.HasPrefix(path, "/api/v1/group/") {
 		return true
 	}

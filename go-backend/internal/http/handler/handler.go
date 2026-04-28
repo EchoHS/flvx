@@ -22,6 +22,7 @@ import (
 	"go-backend/internal/http/response"
 	"go-backend/internal/license"
 	"go-backend/internal/metrics"
+	"go-backend/internal/monitoring"
 	"go-backend/internal/security"
 	"go-backend/internal/store/repo"
 	"go-backend/internal/ws"
@@ -152,6 +153,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/config/list", h.getConfigs)
 	mux.HandleFunc("/api/v1/config/update", h.updateConfigs)
 	mux.HandleFunc("/api/v1/config/update-single", h.updateSingleConfig)
+	mux.HandleFunc("/api/v1/system/storage", h.storageSummary)
 	mux.HandleFunc("/api/v1/license/activate", h.licenseActivate)
 	mux.HandleFunc("/api/v1/backup/export", h.backupExport)
 	mux.HandleFunc("/api/v1/backup/import", h.backupImport)
@@ -1036,6 +1038,8 @@ func normalizeAndValidateConfigValue(key, value string) (string, error) {
 		default:
 			return "", fmt.Errorf("隧道质量检测开关配置值无效")
 		}
+	case monitoring.ConfigMonitorRetentionDays:
+		return monitoring.NormalizeMonitoringRetentionDays(value)
 	default:
 		return value, nil
 	}

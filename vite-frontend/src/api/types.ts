@@ -474,6 +474,12 @@ export interface ServiceMonitorLimitsApiData {
   maxTimeoutSec: number;
 }
 
+export interface StorageSummaryApiData {
+  dbType: string;
+  databaseSizeBytes: number;
+  databaseSizeText: string;
+}
+
 export interface MonitorNodeApiItem {
   id: number;
   inx: number;

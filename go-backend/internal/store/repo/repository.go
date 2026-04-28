@@ -65,7 +65,8 @@ type TunnelQuality = model.TunnelQuality
 // ─── Repository ──────────────────────────────────────────────────────
 
 type Repository struct {
-	db *gorm.DB
+	db     *gorm.DB
+	dbPath string
 }
 
 type FlowUploadCounterDelta struct {
@@ -198,7 +199,7 @@ func Open(path string) (*Repository, error) {
 		return nil, err
 	}
 
-	return &Repository{db: db}, nil
+	return &Repository{db: db, dbPath: path}, nil
 }
 
 func OpenPostgres(dsn string) (*Repository, error) {

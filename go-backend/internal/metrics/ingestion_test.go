@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"go-backend/internal/store/model"
 	"go-backend/internal/store/repo"
 )
 
@@ -215,7 +216,6 @@ func TestPruneMetrics(t *testing.T) {
 	defer r.Close()
 
 	svc := NewIngestionService(r)
-	svc.retentionDays = 1
 
 	info := SystemInfo{CPUUsage: 50.0, MemoryUsage: 60.0, DiskUsage: 30.0}
 
@@ -230,6 +230,39 @@ func TestPruneMetrics(t *testing.T) {
 	}
 	if len(metrics) != 1 {
 		t.Fatalf("expected 1 metric (not pruned), got %d", len(metrics))
+	}
+}
+
+func TestPruneMetricsUsesConfiguredRetentionDays(t *testing.T) {
+	r, err := repo.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	defer r.Close()
+
+	now := time.Now().UnixMilli()
+	if err := r.UpsertConfig("monitor_retention_days", "2", now); err != nil {
+		t.Fatalf("upsert retention config: %v", err)
+	}
+
+	oldMetric := &model.NodeMetric{NodeID: 1, Timestamp: now - int64(3*24*time.Hour/time.Millisecond), CPUUsage: 10}
+	newMetric := &model.NodeMetric{NodeID: 1, Timestamp: now - int64(1*24*time.Hour/time.Millisecond), CPUUsage: 20}
+	if err := r.InsertNodeMetric(oldMetric); err != nil {
+		t.Fatalf("insert old metric: %v", err)
+	}
+	if err := r.InsertNodeMetric(newMetric); err != nil {
+		t.Fatalf("insert new metric: %v", err)
+	}
+
+	svc := NewIngestionService(r)
+	svc.pruneMetricsAt(time.UnixMilli(now))
+
+	metrics, err := r.GetNodeMetrics(1, now-int64(4*24*time.Hour/time.Millisecond), now+1000)
+	if err != nil {
+		t.Fatalf("get node metrics: %v", err)
+	}
+	if len(metrics) != 1 || metrics[0].CPUUsage != 20 {
+		t.Fatalf("expected only newer metric to remain, got %#v", metrics)
 	}
 }
 

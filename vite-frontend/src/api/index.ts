@@ -41,6 +41,7 @@ import type {
   MonitorPermissionApiItem,
   MonitorAccessApiData,
   TunnelQualityApiItem,
+  StorageSummaryApiData,
 } from "./types";
 
 import axios from "axios";
@@ -253,6 +254,9 @@ export const updateConfigs = (configMap: Record<string, string>) =>
   Network.post("/config/update", configMap);
 export const updateConfig = (name: string, value: string) =>
   Network.post("/config/update-single", { name, value });
+
+export const getStorageSummary = () =>
+  Network.get<StorageSummaryApiData>("/system/storage");
 
 export const activateLicense = (licenseKey: string) =>
   Network.post("/license/activate", { license_key: licenseKey });

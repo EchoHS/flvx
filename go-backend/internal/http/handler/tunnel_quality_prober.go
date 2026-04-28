@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go-backend/internal/monitoring"
 	"go-backend/internal/store/model"
 )
 
@@ -15,7 +16,6 @@ const (
 	tunnelQualityProbeInterval  = 1 * time.Second
 	tunnelQualityProbeTimeout   = 8 * time.Second
 	tunnelQualityPingTimeoutMs  = 5000
-	tunnelQualityRetention      = 24 * time.Hour // keep 24h of history
 	tunnelQualityPruneInterval  = 10 * time.Minute
 	tunnelQualityReportInterval = 30 * time.Second // DB save interval
 )
@@ -128,12 +128,19 @@ func (p *tunnelQualityProber) isEnabled() bool {
 	return p.handler.isTunnelQualityMonitoringEnabled()
 }
 
+func (p *tunnelQualityProber) retentionDays() int {
+	if p == nil || p.handler == nil || p.handler.repo == nil {
+		return monitoring.DefaultMonitorRetentionDays
+	}
+	cfg, err := p.handler.repo.GetConfigsByNames([]string{monitoring.ConfigMonitorRetentionDays})
+	if err != nil {
+		return monitoring.DefaultMonitorRetentionDays
+	}
+	return monitoring.MonitoringRetentionDaysFromConfigMap(cfg)
+}
+
 // maybePrune deletes old quality rows periodically (mirrors PruneServiceMonitorResults).
 func (p *tunnelQualityProber) maybePrune() {
-	if !p.isEnabled() {
-		return
-	}
-
 	now := time.Now().UnixMilli()
 	if p.lastPrune > 0 && now-p.lastPrune < int64(tunnelQualityPruneInterval/time.Millisecond) {
 		return
@@ -145,7 +152,7 @@ func (p *tunnelQualityProber) maybePrune() {
 		return
 	}
 
-	cutoff := now - int64(tunnelQualityRetention/time.Millisecond)
+	cutoff := now - int64(time.Duration(p.retentionDays())*24*time.Hour/time.Millisecond)
 	if err := h.repo.PruneTunnelQualityResults(cutoff); err != nil {
 		log.Printf("tunnel_quality_prober: prune err=%v", err)
 	}
@@ -287,7 +294,7 @@ func (p *tunnelQualityProber) probeTunnel(tunnelID int64) {
 					hops = append(hops, hop)
 					break
 				}
-				
+
 				fromNode, _ := h.getNodeRecord(source.NodeID)
 				targetIP, targetPort, resolveErr := resolveChainProbeTarget(fromNode, targetNode, target.Port, ipPreference, target.ConnectIP)
 				if resolveErr != nil {
