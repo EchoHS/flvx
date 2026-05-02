@@ -27,6 +27,8 @@ export interface DiagnosisFallbackInput {
   tunnelType: number;
   description: string;
   message: string;
+  targetIp?: string;
+  targetPort?: number;
 }
 
 export const buildDiagnosisFallbackResult = ({
@@ -34,6 +36,8 @@ export const buildDiagnosisFallbackResult = ({
   tunnelType,
   description,
   message,
+  targetIp = "-",
+  targetPort = 443,
 }: DiagnosisFallbackInput): DiagnosisResult => {
   return {
     tunnelName,
@@ -45,8 +49,8 @@ export const buildDiagnosisFallbackResult = ({
         description,
         nodeName: "-",
         nodeId: "-",
-        targetIp: "-",
-        targetPort: 443,
+        targetIp,
+        targetPort,
         message,
       },
     ],

@@ -209,6 +209,22 @@ func TestTunnelUpdateInvalidProbeTargetDoesNotCleanFederationBindings(t *testing
 	}
 }
 
+func TestTunnelDiagnosisUsesConfiguredProbeTarget(t *testing.T) {
+	h := setupProbeTargetTunnelHandler(t)
+	seedProbeTargetTunnel(t, h, 90, "diagnosis-target", "speed.example.com", 8443)
+
+	_, _, workItems, err := h.prepareTunnelDiagnosis(90)
+	if err != nil {
+		t.Fatalf("prepare tunnel diagnosis: %v", err)
+	}
+	if len(workItems) != 1 {
+		t.Fatalf("expected one diagnosis item, got %d", len(workItems))
+	}
+	if workItems[0].targetIP != "speed.example.com" || workItems[0].targetPort != 8443 {
+		t.Fatalf("expected custom diagnosis target speed.example.com:8443, got %s:%d", workItems[0].targetIP, workItems[0].targetPort)
+	}
+}
+
 func setupProbeTargetTunnelHandler(t *testing.T) *Handler {
 	t.Helper()
 	r, err := repo.Open(filepath.Join(t.TempDir(), "panel.db"))

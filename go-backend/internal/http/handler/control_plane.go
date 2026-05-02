@@ -978,6 +978,7 @@ func (h *Handler) prepareTunnelDiagnosis(tunnelID int64) (string, string, []diag
 
 	ipPreference := h.repo.GetTunnelIPPreference(tunnelID)
 	protocol := strings.ToLower(strings.TrimSpace(tunnel.Protocol))
+	probeTarget := effectiveTunnelProbeTargetValues(tunnel.ProbeTargetHost, tunnel.ProbeTargetPort)
 	inNodes, chainHops, outNodes := splitChainNodeGroups(chainRows)
 	workItems := make([]diagnosisWorkItem, 0, len(chainRows)*2)
 
@@ -987,8 +988,8 @@ func (h *Handler) prepareTunnelDiagnosis(tunnelID int64) (string, string, []diag
 			description := fmt.Sprintf("入口(%s)->外网", inNode.NodeName)
 			workItems = append(workItems, diagnosisWorkItem{
 				fromNodeID:  inNode.NodeID,
-				targetIP:    "www.bing.com",
-				targetPort:  443,
+				targetIP:    probeTarget.Host,
+				targetPort:  probeTarget.Port,
 				description: description,
 				protocol:    "tcp",
 				metadata: map[string]interface{}{
@@ -1079,8 +1080,8 @@ func (h *Handler) prepareTunnelDiagnosis(tunnelID int64) (string, string, []diag
 			description := fmt.Sprintf("出口(%s)->外网", outNode.NodeName)
 			workItems = append(workItems, diagnosisWorkItem{
 				fromNodeID:  outNode.NodeID,
-				targetIP:    "www.bing.com",
-				targetPort:  443,
+				targetIP:    probeTarget.Host,
+				targetPort:  probeTarget.Port,
 				description: description,
 				protocol:    "tcp",
 				metadata: map[string]interface{}{
@@ -1093,8 +1094,8 @@ func (h *Handler) prepareTunnelDiagnosis(tunnelID int64) (string, string, []diag
 			description := fmt.Sprintf("入口(%s)->外网", inNode.NodeName)
 			workItems = append(workItems, diagnosisWorkItem{
 				fromNodeID:  inNode.NodeID,
-				targetIP:    "www.bing.com",
-				targetPort:  443,
+				targetIP:    probeTarget.Host,
+				targetPort:  probeTarget.Port,
 				description: description,
 				protocol:    "tcp",
 				metadata: map[string]interface{}{

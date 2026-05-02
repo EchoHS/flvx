@@ -46,6 +46,7 @@ import { Alert } from "@/shadcn-bridge/heroui/alert";
 import { Checkbox } from "@/shadcn-bridge/heroui/checkbox";
 import { Progress } from "@/shadcn-bridge/heroui/progress";
 import { Radio, RadioGroup } from "@/shadcn-bridge/heroui/radio";
+import { Accordion, AccordionItem } from "@/shadcn-bridge/heroui/accordion";
 import {
   Table,
   TableHeader,
@@ -136,6 +137,14 @@ interface Tunnel {
   status: number;
   createdTime: string;
 }
+
+const DEFAULT_PROBE_TARGET_HOST = "www.bing.com";
+const DEFAULT_PROBE_TARGET_PORT = 443;
+
+const getTunnelDiagnosisTarget = (tunnel: Tunnel) => ({
+  targetIp: tunnel.probeTargetHost || DEFAULT_PROBE_TARGET_HOST,
+  targetPort: tunnel.probeTargetPort || DEFAULT_PROBE_TARGET_PORT,
+});
 
 interface Node {
   id: number;
@@ -902,6 +911,7 @@ export default function TunnelPage() {
   const handleDiagnose = async (tunnel: Tunnel) => {
     diagnosisAbortRef.current?.abort();
     const abortController = new AbortController();
+    const diagnosisTarget = getTunnelDiagnosisTarget(tunnel);
 
     diagnosisAbortRef.current = abortController;
 
@@ -1043,6 +1053,7 @@ export default function TunnelPage() {
               tunnelType: tunnel.type,
               description: "诊断失败",
               message: response.msg || "诊断过程中发生错误",
+              ...diagnosisTarget,
             }),
           );
           setDiagnosisProgress({
@@ -1074,6 +1085,7 @@ export default function TunnelPage() {
           tunnelType: tunnel.type,
           description: "网络错误",
           message: "无法连接到服务器",
+          ...diagnosisTarget,
         }),
       );
       setDiagnosisProgress({
@@ -2335,54 +2347,67 @@ export default function TunnelPage() {
                     </Select>
                   )}
 
-                  <div className="rounded-xl border border-divider/60 bg-default-50/40 p-3 space-y-3">
-                    <div>
-                      <div className="text-sm font-medium">质量检测目标</div>
-                      <p className="text-xs text-default-500 mt-0.5">
-                        用于实时隧道质量检测和 best 最优出口评分，留空使用
-                        www.bing.com:443
-                      </p>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-[1fr_140px] gap-3">
-                      <Input
-                        errorMessage={errors.probeTargetHost}
-                        isInvalid={!!errors.probeTargetHost}
-                        label="Host"
-                        placeholder="www.bing.com"
-                        value={form.probeTargetHost || ""}
-                        variant="bordered"
-                        onChange={(e) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            probeTargetHost: e.target.value,
-                          }))
-                        }
-                      />
-                      <Input
-                        errorMessage={errors.probeTargetPort}
-                        isInvalid={!!errors.probeTargetPort}
-                        label="Port"
-                        max={65535}
-                        min={1}
-                        placeholder="443"
-                        type="number"
-                        value={
-                          form.probeTargetPort
-                            ? String(form.probeTargetPort)
-                            : ""
-                        }
-                        variant="bordered"
-                        onChange={(e) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            probeTargetPort: e.target.value
-                              ? Number(e.target.value)
-                              : 0,
-                          }))
-                        }
-                      />
-                    </div>
-                  </div>
+                  <Accordion className="px-0" variant="light">
+                    <AccordionItem
+                      key="advanced"
+                      aria-label="高级设置"
+                      className="border-b-0 [&_[data-slot=accordion-trigger]]:no-underline [&_[data-slot=accordion-trigger]]:hover:no-underline"
+                      title={
+                        <span className="text-small text-default-500 font-medium">
+                          高级设置
+                        </span>
+                      }
+                    >
+                      <div className="space-y-4 pb-2">
+                        <div>
+                          <div className="text-sm font-medium">质量检测目标</div>
+                          <p className="text-xs text-default-500 mt-0.5">
+                            用于实时隧道质量检测、诊断目标和 best
+                            最优出口评分，留空使用 www.bing.com:443
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-[1fr_140px] gap-3">
+                          <Input
+                            errorMessage={errors.probeTargetHost}
+                            isInvalid={!!errors.probeTargetHost}
+                            label="Host"
+                            placeholder="www.bing.com"
+                            value={form.probeTargetHost || ""}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                probeTargetHost: e.target.value,
+                              }))
+                            }
+                          />
+                          <Input
+                            errorMessage={errors.probeTargetPort}
+                            isInvalid={!!errors.probeTargetPort}
+                            label="Port"
+                            max={65535}
+                            min={1}
+                            placeholder="443"
+                            type="number"
+                            value={
+                              form.probeTargetPort
+                                ? String(form.probeTargetPort)
+                                : ""
+                            }
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                probeTargetPort: e.target.value
+                                  ? Number(e.target.value)
+                                  : 0,
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+                    </AccordionItem>
+                  </Accordion>
 
                   <Divider />
                   <h3 className="text-lg font-semibold">入口配置</h3>
