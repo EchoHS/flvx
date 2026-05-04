@@ -2582,11 +2582,16 @@ export default function NodePage() {
               />
 
               {/* 高级配置 */}
-              <Accordion variant="bordered">
+              <Accordion className="px-0" variant="light">
                 <AccordionItem
                   key="advanced"
                   aria-label="高级配置"
-                  title="高级配置"
+                  className="border-b-0 [&_[data-slot=accordion-trigger]]:no-underline [&_[data-slot=accordion-trigger]]:hover:no-underline"
+                  title={
+                    <span className="text-small text-default-500 font-medium">
+                      高级配置
+                    </span>
+                  }
                 >
                   <div className="space-y-4 pb-2">
                     <Input
@@ -2683,10 +2688,10 @@ export default function NodePage() {
                         />
                       )}
                       <div
-                        className={`grid grid-cols-1 sm:grid-cols-3 gap-3 bg-default-50 dark:bg-default-100 p-3 rounded-md border border-default-200 dark:border-default-100/30 ${protocolDisabled ? "opacity-70" : ""}`}
+                        className={`grid grid-cols-1 sm:grid-cols-3 gap-3 bg-content1/30 dark:bg-content1/20 p-3 rounded-md border border-divider ${protocolDisabled ? "opacity-70" : ""}`}
                       >
                         {/* HTTP tile */}
-                        <div className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30 hover:border-primary-200 transition-colors">
+                        <div className="px-3 py-3 rounded-lg bg-content1/55 dark:bg-content1/35 border border-divider hover:border-primary-200 dark:hover:border-primary-500/30 transition-colors">
                           <div className="flex items-center gap-2 mb-2">
                             <svg
                               aria-hidden="true"
@@ -2727,7 +2732,7 @@ export default function NodePage() {
                         </div>
 
                         {/* TLS tile */}
-                        <div className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30 hover:border-primary-200 transition-colors">
+                        <div className="px-3 py-3 rounded-lg bg-content1/55 dark:bg-content1/35 border border-divider hover:border-primary-200 dark:hover:border-primary-500/30 transition-colors">
                           <div className="flex items-center gap-2 mb-2">
                             <svg
                               aria-hidden="true"
@@ -2771,7 +2776,7 @@ export default function NodePage() {
                         </div>
 
                         {/* SOCKS tile */}
-                        <div className="px-3 py-3 rounded-lg bg-white dark:bg-default-50 border border-default-200 dark:border-default-100/30 hover:border-primary-200 transition-colors">
+                        <div className="px-3 py-3 rounded-lg bg-content1/55 dark:bg-content1/35 border border-divider hover:border-primary-200 dark:hover:border-primary-500/30 transition-colors">
                           <div className="flex items-center gap-2 mb-2">
                             <svg
                               aria-hidden="true"
