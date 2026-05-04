@@ -2268,147 +2268,6 @@ export default function TunnelPage() {
                     <SelectItem key="2">隧道转发</SelectItem>
                   </Select>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Select
-                      errorMessage={errors.flow}
-                      isInvalid={!!errors.flow}
-                      label="流量计算"
-                      placeholder="请选择流量计算方式"
-                      selectedKeys={[form.flow.toString()]}
-                      variant="bordered"
-                      onSelectionChange={(keys) => {
-                        const selectedKey = Array.from(keys)[0] as string;
-
-                        if (selectedKey) {
-                          setForm((prev) => ({
-                            ...prev,
-                            flow: parseInt(selectedKey),
-                          }));
-                        }
-                      }}
-                    >
-                      <SelectItem key="1">单向计算（仅上传）</SelectItem>
-                      <SelectItem key="2">双向计算（上传+下载）</SelectItem>
-                    </Select>
-
-                    <Input
-                      errorMessage={errors.trafficRatio}
-                      isInvalid={!!errors.trafficRatio}
-                      label="流量倍率"
-                      max={100}
-                      min={0.01}
-                      placeholder="例如：0.5 或 1 或 2"
-                      step="any"
-                      type="number"
-                      value={form.trafficRatio.toString()}
-                      variant="bordered"
-                      onChange={(e) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          trafficRatio: parseFloat(e.target.value) || 0,
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <Textarea
-                    description="入口IP由系统自动从入口节点采集，无需手动填写。支持多个IP，每行一个地址，留空则使用入口节点IP"
-                    errorMessage={errors.inIp}
-                    isInvalid={!!errors.inIp}
-                    label="入口IP"
-                    maxRows={5}
-                    minRows={3}
-                    placeholder="一行一个IP地址或域名，例如:&#10;192.168.1.100&#10;example.com"
-                    value={form.inIp}
-                    variant="bordered"
-                    onChange={(e) =>
-                      setForm((prev) => ({ ...prev, inIp: e.target.value }))
-                    }
-                  />
-
-                  {form.type === 2 && (
-                    <Select
-                      description="当节点同时拥有IPv4和IPv6地址时，选择隧道连接使用的地址类型"
-                      label="隧道连接地址偏好"
-                      placeholder="自动选择"
-                      selectedKeys={[form.ipPreference || ""]}
-                      variant="bordered"
-                      onSelectionChange={(keys) => {
-                        const selectedKey = Array.from(keys)[0] as string;
-
-                        setForm((prev) => ({
-                          ...prev,
-                          ipPreference: selectedKey || "",
-                        }));
-                      }}
-                    >
-                      <SelectItem key="v4">优先IPv4</SelectItem>
-                      <SelectItem key="v6">优先IPv6</SelectItem>
-                    </Select>
-                  )}
-
-                  <Accordion className="px-0" variant="light">
-                    <AccordionItem
-                      key="advanced"
-                      aria-label="高级设置"
-                      className="border-b-0 [&_[data-slot=accordion-trigger]]:no-underline [&_[data-slot=accordion-trigger]]:hover:no-underline"
-                      title={
-                        <span className="text-small text-default-500 font-medium">
-                          高级设置
-                        </span>
-                      }
-                    >
-                      <div className="space-y-4 pb-2">
-                        <div>
-                          <div className="text-sm font-medium">质量检测目标</div>
-                          <p className="text-xs text-default-500 mt-0.5">
-                            用于实时隧道质量检测、诊断目标和 best
-                            最优出口评分，留空使用 www.bing.com:443
-                          </p>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-[1fr_140px] gap-3">
-                          <Input
-                            errorMessage={errors.probeTargetHost}
-                            isInvalid={!!errors.probeTargetHost}
-                            label="Host"
-                            placeholder="www.bing.com"
-                            value={form.probeTargetHost || ""}
-                            variant="bordered"
-                            onChange={(e) =>
-                              setForm((prev) => ({
-                                ...prev,
-                                probeTargetHost: e.target.value,
-                              }))
-                            }
-                          />
-                          <Input
-                            errorMessage={errors.probeTargetPort}
-                            isInvalid={!!errors.probeTargetPort}
-                            label="Port"
-                            max={65535}
-                            min={1}
-                            placeholder="443"
-                            type="number"
-                            value={
-                              form.probeTargetPort
-                                ? String(form.probeTargetPort)
-                                : ""
-                            }
-                            variant="bordered"
-                            onChange={(e) =>
-                              setForm((prev) => ({
-                                ...prev,
-                                probeTargetPort: e.target.value
-                                  ? Number(e.target.value)
-                                  : 0,
-                              }))
-                            }
-                          />
-                        </div>
-                      </div>
-                    </AccordionItem>
-                  </Accordion>
-
                   <Divider />
                   <h3 className="text-lg font-semibold">入口配置</h3>
 
@@ -3216,6 +3075,150 @@ export default function TunnelPage() {
                       })()}
                     </>
                   )}
+
+                  <Accordion className="px-0" variant="light">
+                    <AccordionItem
+                      key="advanced"
+                      aria-label="高级设置"
+                      className="border-b-0 [&_[data-slot=accordion-trigger]]:no-underline [&_[data-slot=accordion-trigger]]:hover:no-underline"
+                      title={
+                        <span className="text-small text-default-500 font-medium">
+                          高级设置
+                        </span>
+                      }
+                    >
+                      <div className="space-y-4 pb-2">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <Select
+                            errorMessage={errors.flow}
+                            isInvalid={!!errors.flow}
+                            label="流量计算"
+                            placeholder="请选择流量计算方式"
+                            selectedKeys={[form.flow.toString()]}
+                            variant="bordered"
+                            onSelectionChange={(keys) => {
+                              const selectedKey = Array.from(keys)[0] as string;
+
+                              if (selectedKey) {
+                                setForm((prev) => ({
+                                  ...prev,
+                                  flow: parseInt(selectedKey),
+                                }));
+                              }
+                            }}
+                          >
+                            <SelectItem key="1">单向计算（仅上传）</SelectItem>
+                            <SelectItem key="2">双向计算（上传+下载）</SelectItem>
+                          </Select>
+
+                          <Input
+                            errorMessage={errors.trafficRatio}
+                            isInvalid={!!errors.trafficRatio}
+                            label="流量倍率"
+                            max={100}
+                            min={0.01}
+                            placeholder="例如：0.5 或 1 或 2"
+                            step="any"
+                            type="number"
+                            value={form.trafficRatio.toString()}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                trafficRatio: parseFloat(e.target.value) || 0,
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <Textarea
+                          description="入口IP由系统自动从入口节点采集，无需手动填写。支持多个IP，每行一个地址，留空则使用入口节点IP"
+                          errorMessage={errors.inIp}
+                          isInvalid={!!errors.inIp}
+                          label="入口IP"
+                          maxRows={5}
+                          minRows={3}
+                          placeholder="一行一个IP地址或域名，例如:&#10;192.168.1.100&#10;example.com"
+                          value={form.inIp}
+                          variant="bordered"
+                          onChange={(e) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              inIp: e.target.value,
+                            }))
+                          }
+                        />
+
+                        {form.type === 2 && (
+                          <Select
+                            description="当节点同时拥有IPv4和IPv6地址时，选择隧道连接使用的地址类型"
+                            label="隧道连接地址偏好"
+                            placeholder="自动选择"
+                            selectedKeys={[form.ipPreference || ""]}
+                            variant="bordered"
+                            onSelectionChange={(keys) => {
+                              const selectedKey = Array.from(keys)[0] as string;
+
+                              setForm((prev) => ({
+                                ...prev,
+                                ipPreference: selectedKey || "",
+                              }));
+                            }}
+                          >
+                            <SelectItem key="v4">优先IPv4</SelectItem>
+                            <SelectItem key="v6">优先IPv6</SelectItem>
+                          </Select>
+                        )}
+
+                        <div>
+                          <div className="text-sm font-medium">质量检测目标</div>
+                          <p className="text-xs text-default-500 mt-0.5">
+                            用于实时隧道质量检测、诊断目标和 best
+                            最优出口评分，留空使用 www.bing.com:443
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-[1fr_140px] gap-3">
+                          <Input
+                            errorMessage={errors.probeTargetHost}
+                            isInvalid={!!errors.probeTargetHost}
+                            label="Host"
+                            placeholder="www.bing.com"
+                            value={form.probeTargetHost || ""}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                probeTargetHost: e.target.value,
+                              }))
+                            }
+                          />
+                          <Input
+                            errorMessage={errors.probeTargetPort}
+                            isInvalid={!!errors.probeTargetPort}
+                            label="Port"
+                            max={65535}
+                            min={1}
+                            placeholder="443"
+                            type="number"
+                            value={
+                              form.probeTargetPort
+                                ? String(form.probeTargetPort)
+                                : ""
+                            }
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                probeTargetPort: e.target.value
+                                  ? Number(e.target.value)
+                                  : 0,
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+                    </AccordionItem>
+                  </Accordion>
                 </div>
               </ModalBody>
               <ModalFooter>
