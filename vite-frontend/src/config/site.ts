@@ -15,8 +15,23 @@ const PUBLIC_BRAND_CONFIG_KEYS = [
   "app_favicon",
   "app_bg_image",
 ] as const;
+const SENSITIVE_CONFIG_KEYS = new Set([
+  "jwt_secret",
+  "license_key",
+  "cloudflare_secret_key",
+]);
 const GITHUB_REPO =
   import.meta.env.VITE_GITHUB_REPO || "https://github.com/Sagit-chu/flux-panel";
+
+const shouldPersistConfigKey = (key: string) => {
+  return !SENSITIVE_CONFIG_KEYS.has(key.trim().toLowerCase());
+};
+
+const purgeSensitiveConfigCache = () => {
+  SENSITIVE_CONFIG_KEYS.forEach((key) => {
+    localStorage.removeItem(CACHE_PREFIX + key);
+  });
+};
 
 const readCachedConfigs = (keys: readonly string[]) => {
   const cachedConfigs: Record<string, string> = {};
@@ -75,6 +90,8 @@ const getInitialConfig = () => {
       hide_footer_brand: false,
     };
   }
+
+  purgeSensitiveConfigCache();
 
   const cachedAppName = localStorage.getItem(CACHE_PREFIX + "app_name");
   const cachedAppLogo = localStorage.getItem(CACHE_PREFIX + "app_logo") || "";
@@ -169,7 +186,9 @@ export const getCachedConfig = async (key: string): Promise<string | null> => {
   ) {
     const value = response.data.value;
 
-    configCache.set(key, value);
+    if (shouldPersistConfigKey(key)) {
+      configCache.set(key, value);
+    }
 
     return value;
   }
@@ -200,9 +219,19 @@ export const getCachedConfigs = async (): Promise<Record<string, string>> => {
     if (response.code === 0 && response.data) {
       const configs = response.data;
 
-      // 将所有配置存入缓存
+      // 仅将安全配置存入缓存，敏感项会从 localStorage 中移除
       Object.entries(configs).forEach(([key, value]) => {
-        configCache.set(key, value as string);
+        const normalizedKey = key.trim().toLowerCase();
+
+        if (SENSITIVE_CONFIG_KEYS.has(normalizedKey)) {
+          configCache.remove(normalizedKey);
+
+          return;
+        }
+
+        if (shouldPersistConfigKey(normalizedKey)) {
+          configCache.set(normalizedKey, value as string);
+        }
       });
 
       return configs;
