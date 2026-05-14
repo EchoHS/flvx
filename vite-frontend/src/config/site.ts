@@ -144,7 +144,15 @@ export const configCache = {
 
   // 设置缓存的配置
   set: (key: string, value: string): void => {
-    const cacheKey = CACHE_PREFIX + key;
+    const normalizedKey = key.trim().toLowerCase();
+
+    if (!shouldPersistConfigKey(normalizedKey)) {
+      configCache.remove(normalizedKey);
+
+      return;
+    }
+
+    const cacheKey = CACHE_PREFIX + normalizedKey;
 
     localStorage.setItem(cacheKey, value);
   },

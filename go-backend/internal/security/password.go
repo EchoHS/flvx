@@ -23,3 +23,17 @@ func VerifyPassword(storedHash, plain string) (bool, bool) {
 	}
 	return false, false
 }
+
+func IsLegacyPasswordHash(storedHash string) bool {
+	storedHash = strings.TrimSpace(storedHash)
+	if len(storedHash) != 32 {
+		return false
+	}
+	for _, r := range storedHash {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
+}

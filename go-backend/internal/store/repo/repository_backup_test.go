@@ -5,8 +5,31 @@ import (
 	"testing"
 	"time"
 
+	"go-backend/internal/security"
 	"go-backend/internal/store/model"
 )
+
+func TestSeedDataDefaultAdminUsesBcrypt(t *testing.T) {
+	r, err := Open(filepath.Join(t.TempDir(), "seed.db"))
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	defer r.Close()
+
+	admin, err := r.GetUserByUsername("admin_user")
+	if err != nil {
+		t.Fatalf("get admin user: %v", err)
+	}
+	if admin == nil {
+		t.Fatal("expected seeded admin user")
+	}
+	if security.IsLegacyPasswordHash(admin.Pwd) {
+		t.Fatalf("seeded admin password is legacy MD5: %q", admin.Pwd)
+	}
+	if ok, legacy := security.VerifyPassword(admin.Pwd, "admin_user"); !ok || legacy {
+		t.Fatalf("VerifyPassword() = (%v,%v), want (true,false)", ok, legacy)
+	}
+}
 
 func TestBackupRoundTripsTunnelProbeTarget(t *testing.T) {
 	source, err := Open(filepath.Join(t.TempDir(), "source.db"))
@@ -134,6 +157,62 @@ func TestImportIgnoresSensitiveConfigs(t *testing.T) {
 	assertConfigValue(t, r, "jwt_secret", "jwt-before")
 	assertConfigValue(t, r, "license_key", "license-before")
 	assertConfigValue(t, r, "cloudflare_secret_key", "cloudflare-before")
+}
+
+func TestImportUsersDoesNotStoreLegacyMD5Passwords(t *testing.T) {
+	r, err := Open(filepath.Join(t.TempDir(), "legacy-user-import.db"))
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	defer r.Close()
+
+	now := time.Now().UnixMilli()
+	backup := &model.BackupData{
+		Version: "1.0",
+		Users: []model.UserBackup{{
+			ID:            55,
+			User:          "legacy-import-user",
+			Pwd:           "3c85cdebade1c51cf64ca9f3c09d182d",
+			RoleID:        1,
+			ExpTime:       2727251700000,
+			Flow:          99999,
+			InFlow:        0,
+			OutFlow:       0,
+			FlowResetTime: 1,
+			Num:           99999,
+			CreatedTime:   now,
+			UpdatedTime:   now,
+			Status:        1,
+		}},
+	}
+
+	result, err := r.Import(backup, []string{"users"})
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.UsersImported != 1 {
+		t.Fatalf("UsersImported = %d, want 1", result.UsersImported)
+	}
+
+	user, err := r.GetUserByUsername("legacy-import-user")
+	if err != nil {
+		t.Fatalf("get imported user: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected imported user")
+	}
+	if security.IsLegacyPasswordHash(user.Pwd) {
+		t.Fatalf("imported password remained legacy MD5: %q", user.Pwd)
+	}
+	if ok, _ := security.VerifyPassword(user.Pwd, "admin_user"); ok {
+		t.Fatal("legacy imported password should not remain usable")
+	}
+	if user.Status != 0 {
+		t.Fatalf("legacy imported user status = %d, want disabled status 0", user.Status)
+	}
+	if user.PasswordChangedAt <= 0 {
+		t.Fatalf("PasswordChangedAt = %d, want import revocation timestamp", user.PasswordChangedAt)
+	}
 }
 
 func seedConfig(t *testing.T, r *Repository, name, value string) {
