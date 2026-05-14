@@ -12,7 +12,8 @@ import (
 
 func TestStorageSummaryRequiresAdminAndReturnsSize(t *testing.T) {
 	secret := "storage-contract-secret"
-	router, _ := setupContractRouter(t, secret)
+	router, r := setupContractRouter(t, secret)
+	seedContractUser(t, r, 2, "normal_user", 1, 1)
 
 	adminToken, err := auth.GenerateToken(1, "admin_user", 0, secret)
 	if err != nil {

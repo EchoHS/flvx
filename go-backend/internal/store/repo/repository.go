@@ -1,7 +1,9 @@
 package repo
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -19,6 +21,7 @@ import (
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 
+	"go-backend/internal/security"
 	"go-backend/internal/store/model"
 )
 
@@ -416,13 +419,23 @@ func prepareSQLiteLegacyColumns(db *gorm.DB) error {
 }
 
 func seedData(db *gorm.DB) {
-	adminUser := model.User{
-		ID: 1, User: "admin_user", Pwd: "3c85cdebade1c51cf64ca9f3c09d182d",
-		RoleID: 0, ExpTime: 2727251700000, Flow: 99999, InFlow: 0, OutFlow: 0,
-		FlowResetTime: 1, Num: 99999, CreatedTime: 1748914865000,
-		UpdatedTime: sql.NullInt64{Int64: 1754011744252, Valid: true}, Status: 1,
+	var adminCount int64
+	if err := db.Model(&model.User{}).Where("id = ?", 1).Count(&adminCount).Error; err == nil && adminCount == 0 {
+		adminPwd, err := security.HashPassword("admin_user")
+		if err != nil {
+			log.Printf("seed admin password hash failed: %v", err)
+		} else {
+			adminUser := model.User{
+				ID: 1, User: "admin_user", Pwd: adminPwd,
+				RoleID: 0, ExpTime: 2727251700000, Flow: 99999, InFlow: 0, OutFlow: 0,
+				FlowResetTime: 1, Num: 99999, CreatedTime: 1748914865000,
+				UpdatedTime:       sql.NullInt64{Int64: 1754011744252, Valid: true},
+				Status:            1,
+				PasswordChangedAt: 1748914865000,
+			}
+			db.Create(&adminUser)
+		}
 	}
-	db.Where("id = ?", 1).FirstOrCreate(&adminUser)
 
 	appNameConfig := model.ViteConfig{ID: 1, Name: "app_name", Value: "flux", Time: 1755147963000}
 	db.Where("id = ?", 1).FirstOrCreate(&appNameConfig)
@@ -486,9 +499,10 @@ func (r *Repository) UpdateUserNameAndPassword(userID int64, username, passwordM
 		return errors.New("repository not initialized")
 	}
 	return r.db.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
-		"user":         username,
-		"pwd":          passwordMD5,
-		"updated_time": now,
+		"user":                username,
+		"pwd":                 passwordMD5,
+		"password_changed_at": now,
+		"updated_time":        now,
 	}).Error
 }
 
@@ -1890,7 +1904,7 @@ func (r *Repository) ExportAll() (*model.BackupData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("export configs failed: %w", err)
 	}
-	backup.Configs = configs
+	backup.Configs = FilterSensitiveConfigs(configs)
 
 	return backup, nil
 }
@@ -1970,7 +1984,7 @@ func (r *Repository) ExportPartial(types []string) (*model.BackupData, error) {
 		if err != nil {
 			return nil, fmt.Errorf("export configs failed: %w", err)
 		}
-		backup.Configs = v
+		backup.Configs = FilterSensitiveConfigs(v)
 	}
 	return backup, nil
 }
@@ -2352,26 +2366,31 @@ func (r *Repository) Import(backup *model.BackupData, types []string) (*model.Im
 func importUsers(tx *gorm.DB, users []model.UserBackup, now int64) (int, error) {
 	count := 0
 	for _, u := range users {
-		item := model.User{
-			ID:            u.ID,
-			User:          u.User,
-			Pwd:           u.Pwd,
-			RoleID:        u.RoleID,
-			ExpTime:       u.ExpTime,
-			Flow:          u.Flow,
-			InFlow:        u.InFlow,
-			OutFlow:       u.OutFlow,
-			FlowResetTime: u.FlowResetTime,
-			Num:           u.Num,
-			CreatedTime:   u.CreatedTime,
-			UpdatedTime:   sql.NullInt64{Int64: now, Valid: true},
-			Status:        u.Status,
+		pwdHash, status, err := normalizeImportedUserPassword(u.Pwd, u.Status)
+		if err != nil {
+			return count, err
 		}
-		err := tx.Clauses(clause.OnConflict{
+		item := model.User{
+			ID:                u.ID,
+			User:              u.User,
+			Pwd:               pwdHash,
+			RoleID:            u.RoleID,
+			ExpTime:           u.ExpTime,
+			Flow:              u.Flow,
+			InFlow:            u.InFlow,
+			OutFlow:           u.OutFlow,
+			FlowResetTime:     u.FlowResetTime,
+			Num:               u.Num,
+			CreatedTime:       u.CreatedTime,
+			UpdatedTime:       sql.NullInt64{Int64: now, Valid: true},
+			Status:            status,
+			PasswordChangedAt: now,
+		}
+		err = tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
 				"user", "pwd", "role_id", "exp_time", "flow", "in_flow", "out_flow",
-				"flow_reset_time", "num", "updated_time", "status",
+				"flow_reset_time", "num", "updated_time", "status", "password_changed_at",
 			}),
 		}).Create(&item).Error
 		if err != nil {
@@ -2413,6 +2432,33 @@ func importUsers(tx *gorm.DB, users []model.UserBackup, now int64) (int, error) 
 		count++
 	}
 	return count, nil
+}
+
+func normalizeImportedUserPassword(password string, status int) (string, int, error) {
+	password = strings.TrimSpace(password)
+	if strings.HasPrefix(password, "$2") {
+		return password, status, nil
+	}
+	if security.IsLegacyPasswordHash(password) || password == "" {
+		replacement, err := randomPasswordHash()
+		if err != nil {
+			return "", status, err
+		}
+		return replacement, 0, nil
+	}
+	hash, err := security.HashPassword(password)
+	if err != nil {
+		return "", status, err
+	}
+	return hash, status, nil
+}
+
+func randomPasswordHash() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return security.HashPassword(hex.EncodeToString(buf))
 }
 
 func importNodes(tx *gorm.DB, nodes []model.NodeBackup, now int64) (int, error) {
@@ -2726,6 +2772,7 @@ func importPermissions(tx *gorm.DB, permissions []model.PermissionBackup, _ int6
 }
 
 func importConfigs(tx *gorm.DB, configs map[string]string, now int64) (int, error) {
+	configs = FilterSensitiveConfigs(configs)
 	count := 0
 	for name, value := range configs {
 		err := tx.Clauses(clause.OnConflict{

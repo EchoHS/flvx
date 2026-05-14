@@ -253,6 +253,8 @@ export const getConfigs = () =>
   Network.post<Record<string, string>>("/config/list");
 export const getConfigByName = (name: string) =>
   Network.post<{ name: string; value: string }>("/config/get", { name });
+export const getPublicConfigByName = (name: string) =>
+  Network.post<{ name: string; value: string }>("/public/config/get", { name });
 export const updateConfigs = (configMap: Record<string, string>) =>
   Network.post("/config/update", configMap);
 export const updateConfig = (name: string, value: string) =>

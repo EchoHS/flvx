@@ -17,6 +17,7 @@ import (
 	httpserver "go-backend/internal/http"
 	"go-backend/internal/http/handler"
 	"go-backend/internal/http/response"
+	"go-backend/internal/security"
 	"go-backend/internal/store/repo"
 
 	"gorm.io/gorm"
@@ -128,6 +129,46 @@ func TestCaptchaVerifyLoginContract(t *testing.T) {
 	})
 }
 
+func TestPublicConfigGetAndAuthConfigContract(t *testing.T) {
+	router, r := setupContractRouter(t, "contract-jwt-secret")
+
+	for name, value := range map[string]string{
+		"app_name":              "FLVX Public",
+		"app_logo":              "logo",
+		"app_favicon":           "favicon",
+		"app_bg_image":          "bg",
+		"cloudflare_site_key":   "site-key",
+		"cloudflare_secret_key": "secret-key",
+		"jwt_secret":            "jwt-secret",
+	} {
+		if err := r.DB().Exec(`
+			INSERT INTO vite_config(name, value, time)
+			VALUES(?, ?, ?)
+			ON CONFLICT(name) DO UPDATE SET value = excluded.value, time = excluded.time
+		`, name, value, time.Now().UnixMilli()).Error; err != nil {
+			t.Fatalf("seed config %s: %v", name, err)
+		}
+	}
+
+	publicReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/config/get", bytes.NewBufferString(`{"name":"app_name"}`))
+	publicReq.Header.Set("Content-Type", "application/json")
+	publicResp := httptest.NewRecorder()
+	router.ServeHTTP(publicResp, publicReq)
+	assertCode(t, publicResp, 0)
+
+	secretReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/config/get", bytes.NewBufferString(`{"name":"jwt_secret"}`))
+	secretReq.Header.Set("Content-Type", "application/json")
+	secretResp := httptest.NewRecorder()
+	router.ServeHTTP(secretResp, secretReq)
+	assertCodeMsg(t, secretResp, 403, "禁止访问敏感配置")
+
+	configReq := httptest.NewRequest(http.MethodPost, "/api/v1/config/get", bytes.NewBufferString(`{"name":"app_name"}`))
+	configReq.Header.Set("Content-Type", "application/json")
+	configResp := httptest.NewRecorder()
+	router.ServeHTTP(configResp, configReq)
+	assertCodeMsg(t, configResp, 401, "未登录或token已过期")
+}
+
 func TestOpenAPISubStoreContracts(t *testing.T) {
 	router, r := setupContractRouter(t, "contract-jwt-secret")
 
@@ -209,6 +250,122 @@ func TestOpenAPISubStoreContracts(t *testing.T) {
 	})
 }
 
+func TestLegacyPasswordMigratesOnSubStore(t *testing.T) {
+	router, r := setupContractRouter(t, "contract-jwt-secret")
+	legacyChangedAt := seedLegacyUser(t, r, 9102, "legacy-substore-user", "legacy-substore-pass")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/open_api/sub_store?user=legacy-substore-user&pwd=legacy-substore-pass", nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	expected := "upload=0; download=0; total=107373108658176; expire=2727251700"
+	if string(body) != expected {
+		t.Fatalf("expected body %q, got %q", expected, string(body))
+	}
+	assertUserPasswordIsBcrypt(t, r, "legacy-substore-user", "legacy-substore-pass")
+	if changedAt := mustQueryPasswordChangedAtByUsername(t, r, "legacy-substore-user"); changedAt <= legacyChangedAt {
+		t.Fatalf("expected password_changed_at to advance on sub-store migration, got %d <= %d", changedAt, legacyChangedAt)
+	}
+}
+
+func TestDisabledLegacyPasswordIsRejectedOnSubStoreWithoutMigration(t *testing.T) {
+	router, r := setupContractRouter(t, "contract-jwt-secret")
+	legacyChangedAt := seedLegacyUserWithStatus(t, r, 9106, "disabled-substore-user", "disabled-substore-pass", 0)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/open_api/sub_store?user=disabled-substore-user&pwd=disabled-substore-pass", nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+	assertCodeMsg(t, resp, -1, "账号被停用")
+
+	user, err := r.GetUserByUsername("disabled-substore-user")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected disabled user to exist")
+	}
+	if ok, migrated := security.VerifyPassword(user.Pwd, "disabled-substore-pass"); !ok || !migrated {
+		t.Fatalf("expected disabled user to remain legacy MD5, got (%v,%v) with hash %q", ok, migrated, user.Pwd)
+	}
+	if changedAt := mustQueryPasswordChangedAtByUsername(t, r, "disabled-substore-user"); changedAt != legacyChangedAt {
+		t.Fatalf("expected password_changed_at to remain unchanged, got %d want %d", changedAt, legacyChangedAt)
+	}
+}
+
+func TestUserCreateStoresStrongHash(t *testing.T) {
+	router, r := setupContractRouter(t, "contract-jwt-secret")
+	startedAt := time.Now().UnixMilli()
+	adminToken, err := auth.GenerateToken(1, "admin_user", 0, "contract-jwt-secret")
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"user":"created-user","pwd":"created-pass"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/user/create", body)
+	req.Header.Set("Authorization", adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+	assertCode(t, resp, 0)
+	assertUserPasswordIsBcrypt(t, r, "created-user", "created-pass")
+	if changedAt := mustQueryPasswordChangedAtByUsername(t, r, "created-user"); changedAt < startedAt {
+		t.Fatalf("expected password_changed_at to be set on create, got %d < %d", changedAt, startedAt)
+	}
+}
+
+func TestUserUpdateStoresStrongHash(t *testing.T) {
+	router, r := setupContractRouter(t, "contract-jwt-secret")
+	seedLegacyUser(t, r, 9103, "legacy-update-user", "legacy-update-pass")
+	startedAt := time.Now().UnixMilli()
+	adminToken, err := auth.GenerateToken(1, "admin_user", 0, "contract-jwt-secret")
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"id":9103,"user":"updated-user","pwd":"updated-pass","flow":99999,"num":99999,"expTime":2727251700000,"flowResetTime":1,"status":1,"maxConn":0}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/user/update", body)
+	req.Header.Set("Authorization", adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+	assertCode(t, resp, 0)
+	assertUserPasswordIsBcrypt(t, r, "updated-user", "updated-pass")
+	if changedAt := mustQueryPasswordChangedAtByUsername(t, r, "updated-user"); changedAt < startedAt {
+		t.Fatalf("expected password_changed_at to be updated on user update, got %d < %d", changedAt, startedAt)
+	}
+}
+
+func TestUpdatePasswordStoresStrongHash(t *testing.T) {
+	router, r := setupContractRouter(t, "contract-jwt-secret")
+	seedLegacyUser(t, r, 9104, "legacy-self-user", "legacy-self-pass")
+	startedAt := time.Now().UnixMilli()
+	token, err := auth.GenerateToken(9104, "legacy-self-user", 1, "contract-jwt-secret")
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"newUsername":"self-updated-user","currentPassword":"legacy-self-pass","newPassword":"self-updated-pass","confirmPassword":"self-updated-pass"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/user/updatePassword", body)
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+	assertCode(t, resp, 0)
+	assertUserPasswordIsBcrypt(t, r, "self-updated-user", "self-updated-pass")
+	if changedAt := mustQueryPasswordChangedAtByUsername(t, r, "self-updated-user"); changedAt < startedAt {
+		t.Fatalf("expected password_changed_at to be updated on password change, got %d < %d", changedAt, startedAt)
+	}
+}
+
 func TestSpeedLimitTunnelsRouteRemoved(t *testing.T) {
 	secret := "contract-jwt-secret"
 	router, _ := setupContractRouter(t, secret)
@@ -232,6 +389,7 @@ func TestSpeedLimitTunnelsRouteRemoved(t *testing.T) {
 func TestBackupExportImportRestoreContracts(t *testing.T) {
 	secret := "contract-jwt-secret"
 	router, r := setupContractRouter(t, secret)
+	seedContractUser(t, r, 2, "normal_user", 1, 1)
 
 	adminToken, err := auth.GenerateToken(1, "admin_user", 0, secret)
 	if err != nil {
@@ -559,6 +717,71 @@ func TestBackupExportImportRestoreContracts(t *testing.T) {
 	})
 }
 
+func TestBackupConfigFilteringContract(t *testing.T) {
+	secret := "contract-jwt-secret"
+	router, r := setupContractRouter(t, secret)
+
+	adminToken, err := auth.GenerateToken(1, "admin_user", 0, secret)
+	if err != nil {
+		t.Fatalf("generate admin token: %v", err)
+	}
+
+	configs := map[string]string{
+		"app_name":              "contract-before",
+		"cloudflare_site_key":   "site-key-before",
+		"jwt_secret":            "jwt-before",
+		"license_key":           "license-before",
+		"cloudflare_secret_key": "cloudflare-before",
+	}
+	for name, value := range configs {
+		if err := r.DB().Exec(`
+			INSERT INTO vite_config(name, value, time)
+			VALUES(?, ?, ?)
+			ON CONFLICT(name) DO UPDATE SET value = excluded.value, time = excluded.time
+		`, name, value, time.Now().UnixMilli()).Error; err != nil {
+			t.Fatalf("seed config %s: %v", name, err)
+		}
+	}
+
+	payload := exportBackupPayload(t, router, "/api/v1/backup/export", adminToken)
+	for _, key := range []string{"jwt_secret", "license_key", "cloudflare_secret_key"} {
+		if _, ok := payload.Configs[key]; ok {
+			t.Fatalf("expected %s to be omitted from exported configs: %+v", key, payload.Configs)
+		}
+	}
+	if payload.Configs["app_name"] != "contract-before" {
+		t.Fatalf("expected public config to be exported, got %+v", payload.Configs)
+	}
+
+	payload.Configs["app_name"] = "contract-after"
+	payload.Configs["jwt_secret"] = "jwt-after"
+	payload.Configs["license_key"] = "license-after"
+	payload.Configs["cloudflare_secret_key"] = "cloudflare-after"
+	raw, err := json.Marshal(backupImportPayload{Types: []string{"configs"}, backupExportPayload: payload})
+	if err != nil {
+		t.Fatalf("marshal import payload: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/backup/import", bytes.NewReader(raw))
+	req.Header.Set("Authorization", adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+	var out response.R
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode import response: %v", err)
+	}
+	if out.Code != 0 {
+		t.Fatalf("expected import code 0, got %d (%s)", out.Code, out.Msg)
+	}
+
+	assertConfigValue(t, r, "app_name", "contract-after")
+	assertConfigValue(t, r, "jwt_secret", "jwt-before")
+	assertConfigValue(t, r, "license_key", "license-before")
+	assertConfigValue(t, r, "cloudflare_secret_key", "cloudflare-before")
+}
+
 type backupExportPayload struct {
 	Version    string            `json:"version"`
 	ExportedAt int64             `json:"exportedAt"`
@@ -617,6 +840,66 @@ func setupContractRouter(t *testing.T, jwtSecret string) (http.Handler, *repo.Re
 
 	h := handler.New(r, jwtSecret)
 	return httpserver.NewRouter(h, jwtSecret), r
+}
+
+func assertConfigValue(t *testing.T, r *repo.Repository, name, want string) {
+	t.Helper()
+	cfg, err := r.GetConfigByName(name)
+	if err != nil {
+		t.Fatalf("get config %s: %v", name, err)
+	}
+	if cfg == nil || cfg.Value != want {
+		t.Fatalf("expected config %s=%q, got %+v", name, want, cfg)
+	}
+}
+
+func seedLegacyUser(t *testing.T, r *repo.Repository, id int64, username, password string) int64 {
+	return seedLegacyUserWithStatus(t, r, id, username, password, 1)
+}
+
+func seedContractUser(t *testing.T, r *repo.Repository, id int64, username string, roleID, status int) int64 {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	passwordChangedAt := now - 10_000
+	if err := r.DB().Exec(`
+		INSERT INTO user(id, user, pwd, role_id, exp_time, flow, in_flow, out_flow, flow_reset_time, num, max_conn, created_time, updated_time, status, password_changed_at)
+		VALUES(?, ?, ?, ?, 2727251700000, 99999, 0, 0, 1, 99999, 0, ?, ?, ?, ?)
+	`, id, username, security.MD5("contract-pass"), roleID, now, now, status, passwordChangedAt).Error; err != nil {
+		t.Fatalf("seed contract user %s: %v", username, err)
+	}
+	return passwordChangedAt
+}
+
+func seedLegacyUserWithStatus(t *testing.T, r *repo.Repository, id int64, username, password string, status int) int64 {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	legacyChangedAt := now - 10_000
+	if err := r.DB().Exec(`
+		INSERT INTO user(id, user, pwd, role_id, exp_time, flow, in_flow, out_flow, flow_reset_time, num, max_conn, created_time, updated_time, status, password_changed_at)
+		VALUES(?, ?, ?, 1, 2727251700000, 99999, 0, 0, 1, 99999, 0, ?, ?, ?, ?)
+	`, id, username, security.MD5(password), now, now, status, legacyChangedAt).Error; err != nil {
+		t.Fatalf("seed legacy user %s: %v", username, err)
+	}
+	return legacyChangedAt
+}
+
+func mustQueryPasswordChangedAtByUsername(t *testing.T, r *repo.Repository, username string) int64 {
+	t.Helper()
+	return mustQueryInt64(t, r, `SELECT password_changed_at FROM user WHERE user = ?`, username)
+}
+
+func assertUserPasswordIsBcrypt(t *testing.T, r *repo.Repository, username, password string) {
+	t.Helper()
+	user, err := r.GetUserByUsername(username)
+	if err != nil {
+		t.Fatalf("get user %s: %v", username, err)
+	}
+	if user == nil {
+		t.Fatalf("expected user %s to exist", username)
+	}
+	if ok, migrated := security.VerifyPassword(user.Pwd, password); !ok || migrated {
+		t.Fatalf("expected bcrypt password for %s, got %q", username, user.Pwd)
+	}
 }
 
 func TestOpenMigratesLegacyNodeDualStackColumns(t *testing.T) {

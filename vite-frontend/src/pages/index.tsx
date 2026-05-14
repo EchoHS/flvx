@@ -10,7 +10,7 @@ import { Button } from "@/shadcn-bridge/heroui/button";
 import { siteConfig } from "@/config/site";
 import { VersionFooter } from "@/components/version-footer";
 import { BrandLogo } from "@/components/brand-logo";
-import { login, LoginData, checkCaptcha, getConfigByName } from "@/api";
+import { login, LoginData, checkCaptcha, getPublicConfigByName } from "@/api";
 import { writeLoginSession } from "@/utils/session";
 import { useWebViewMode } from "@/hooks/useWebViewMode";
 
@@ -128,7 +128,7 @@ export default function IndexPage() {
       if (checkResponse.data === 0) {
         await performLogin();
       } else {
-        const configResp = await getConfigByName("cloudflare_site_key");
+        const configResp = await getPublicConfigByName("cloudflare_site_key");
 
         if (configResp.code === 0 && configResp.data && configResp.data.value) {
           setSiteKey(configResp.data.value);

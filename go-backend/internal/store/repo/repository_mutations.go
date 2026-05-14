@@ -42,19 +42,20 @@ func (r *Repository) CreateUser(username, pwdHash string, roleID int, expTime, f
 		return 0, errors.New("repository not initialized")
 	}
 	user := model.User{
-		User:          username,
-		Pwd:           pwdHash,
-		RoleID:        roleID,
-		ExpTime:       expTime,
-		Flow:          flow,
-		InFlow:        0,
-		OutFlow:       0,
-		FlowResetTime: flowResetTime,
-		Num:           num,
-		MaxConn:       maxConn,
-		CreatedTime:   now,
-		UpdatedTime:   sql.NullInt64{Int64: now, Valid: true},
-		Status:        status,
+		User:              username,
+		Pwd:               pwdHash,
+		RoleID:            roleID,
+		ExpTime:           expTime,
+		Flow:              flow,
+		InFlow:            0,
+		OutFlow:           0,
+		FlowResetTime:     flowResetTime,
+		Num:               num,
+		MaxConn:           maxConn,
+		CreatedTime:       now,
+		UpdatedTime:       sql.NullInt64{Int64: now, Valid: true},
+		Status:            status,
+		PasswordChangedAt: now,
 	}
 	if err := r.db.Create(&user).Error; err != nil {
 		return 0, err
@@ -81,15 +82,16 @@ func (r *Repository) UpdateUserWithPassword(id int64, username, pwdHash string, 
 	return r.db.Model(&model.User{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"user":            username,
-			"pwd":             pwdHash,
-			"flow":            flow,
-			"num":             num,
-			"exp_time":        expTime,
-			"flow_reset_time": flowResetTime,
-			"status":          status,
-			"max_conn":        maxConn,
-			"updated_time":    sql.NullInt64{Int64: now, Valid: true},
+			"user":                username,
+			"pwd":                 pwdHash,
+			"flow":                flow,
+			"num":                 num,
+			"exp_time":            expTime,
+			"flow_reset_time":     flowResetTime,
+			"status":              status,
+			"max_conn":            maxConn,
+			"password_changed_at": now,
+			"updated_time":        sql.NullInt64{Int64: now, Valid: true},
 		}).Error
 }
 
@@ -108,6 +110,19 @@ func (r *Repository) UpdateUserWithoutPassword(id int64, username string, flow i
 			"status":          status,
 			"max_conn":        maxConn,
 			"updated_time":    sql.NullInt64{Int64: now, Valid: true},
+		}).Error
+}
+
+func (r *Repository) UpdateUserPassword(userID int64, pwdHash string, now int64) error {
+	if r == nil || r.db == nil {
+		return errors.New("repository not initialized")
+	}
+	return r.db.Model(&model.User{}).
+		Where("id = ?", userID).
+		Updates(map[string]interface{}{
+			"pwd":                 pwdHash,
+			"password_changed_at": now,
+			"updated_time":        sql.NullInt64{Int64: now, Valid: true},
 		}).Error
 }
 

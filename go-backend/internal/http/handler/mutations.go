@@ -71,7 +71,12 @@ func (h *Handler) userCreate(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UnixMilli()
 	maxConn := asInt(req["maxConn"], 0)
 
-	userID, err := h.repo.CreateUser(username, security.MD5(pwd), roleID, expTime, flow, flowResetTime, num, status, maxConn, now)
+	hashedPassword, err := security.HashPassword(pwd)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	userID, err := h.repo.CreateUser(username, hashedPassword, roleID, expTime, flow, flowResetTime, num, status, maxConn, now)
 	if err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
@@ -176,7 +181,12 @@ func (h *Handler) userUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if err := h.repo.UpdateUserWithPassword(id, username, security.MD5(pwd), flow, num, expTime, flowResetTime, status, maxConn, now); err != nil {
+		hashedPassword, err := security.HashPassword(pwd)
+		if err != nil {
+			response.WriteJSON(w, response.Err(-2, err.Error()))
+			return
+		}
+		if err := h.repo.UpdateUserWithPassword(id, username, hashedPassword, flow, num, expTime, flowResetTime, status, maxConn, now); err != nil {
 			response.WriteJSON(w, response.Err(-2, err.Error()))
 			return
 		}

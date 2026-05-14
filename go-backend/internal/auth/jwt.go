@@ -12,12 +12,13 @@ import (
 
 const (
 	algorithm  = "HmacSHA256"
-	expireTime = 90 * 24 * time.Hour
+	expireTime = 7 * 24 * time.Hour
 )
 
 type Claims struct {
 	Sub    string `json:"sub"`
 	Iat    int64  `json:"iat"`
+	IatMs  int64  `json:"iat_ms"`
 	Exp    int64  `json:"exp"`
 	User   string `json:"user"`
 	Name   string `json:"name"`
@@ -30,11 +31,15 @@ type tokenHeader struct {
 }
 
 func GenerateToken(userID int64, username string, roleID int, secret string) (string, error) {
-	now := time.Now()
+	return GenerateTokenAt(userID, username, roleID, secret, time.Now())
+}
+
+func GenerateTokenAt(userID int64, username string, roleID int, secret string, now time.Time) (string, error) {
 	header := tokenHeader{Alg: algorithm, Typ: "JWT"}
 	claims := Claims{
 		Sub:    strconv.FormatInt(userID, 10),
 		Iat:    now.Unix(),
+		IatMs:  now.UnixMilli(),
 		Exp:    now.Add(expireTime).Unix(),
 		User:   username,
 		Name:   username,

@@ -1,4 +1,5 @@
-import { getConfigByName, getConfigs } from "@/api";
+import { getConfigByName, getConfigs, getPublicConfigByName } from "@/api";
+import { isLoggedIn } from "@/utils/auth";
 
 export type SiteConfig = typeof siteConfig;
 
@@ -8,8 +9,72 @@ const VERSION = import.meta.env.VITE_APP_VERSION || "dev";
 const APP_VERSION = "1.0.3";
 const DEFAULT_FAVICON = "/favicon.ico";
 const FAVICON_LINK_ID = "app-favicon";
+const PUBLIC_BRAND_CONFIG_KEYS = [
+  "app_name",
+  "app_logo",
+  "app_favicon",
+  "app_bg_image",
+] as const;
+const SENSITIVE_CONFIG_KEYS = new Set([
+  "jwt_secret",
+  "license_key",
+  "cloudflare_secret_key",
+]);
 const GITHUB_REPO =
   import.meta.env.VITE_GITHUB_REPO || "https://github.com/Sagit-chu/flux-panel";
+
+const shouldPersistConfigKey = (key: string) => {
+  return !SENSITIVE_CONFIG_KEYS.has(key.trim().toLowerCase());
+};
+
+const purgeSensitiveConfigCache = () => {
+  SENSITIVE_CONFIG_KEYS.forEach((key) => {
+    localStorage.removeItem(CACHE_PREFIX + key);
+  });
+};
+
+const readCachedConfigs = (keys: readonly string[]) => {
+  const cachedConfigs: Record<string, string> = {};
+  let hasCachedData = false;
+
+  keys.forEach((key) => {
+    const cachedValue = configCache.get(key);
+
+    if (cachedValue !== null) {
+      cachedConfigs[key] = cachedValue;
+      hasCachedData = true;
+    }
+  });
+
+  return { cachedConfigs, hasCachedData };
+};
+
+const fetchPublicBrandConfigs = async (): Promise<Record<string, string>> => {
+  const publicConfigMap: Record<string, string> = {};
+
+  await Promise.all(
+    PUBLIC_BRAND_CONFIG_KEYS.map(async (key) => {
+      try {
+        const response = await getPublicConfigByName(key);
+
+        if (
+          response.code === 0 &&
+          response.data &&
+          typeof response.data.value === "string"
+        ) {
+          const value = response.data.value;
+
+          publicConfigMap[key] = value;
+          configCache.set(key, value);
+        }
+      } catch {
+        // ignore single key fetch error
+      }
+    }),
+  );
+
+  return publicConfigMap;
+};
 
 const getInitialConfig = () => {
   if (typeof window === "undefined") {
@@ -25,6 +90,8 @@ const getInitialConfig = () => {
       hide_footer_brand: false,
     };
   }
+
+  purgeSensitiveConfigCache();
 
   const cachedAppName = localStorage.getItem(CACHE_PREFIX + "app_name");
   const cachedAppLogo = localStorage.getItem(CACHE_PREFIX + "app_logo") || "";
@@ -77,7 +144,15 @@ export const configCache = {
 
   // 设置缓存的配置
   set: (key: string, value: string): void => {
-    const cacheKey = CACHE_PREFIX + key;
+    const normalizedKey = key.trim().toLowerCase();
+
+    if (!shouldPersistConfigKey(normalizedKey)) {
+      configCache.remove(normalizedKey);
+
+      return;
+    }
+
+    const cacheKey = CACHE_PREFIX + normalizedKey;
 
     localStorage.setItem(cacheKey, value);
   },
@@ -119,7 +194,9 @@ export const getCachedConfig = async (key: string): Promise<string | null> => {
   ) {
     const value = response.data.value;
 
-    configCache.set(key, value);
+    if (shouldPersistConfigKey(key)) {
+      configCache.set(key, value);
+    }
 
     return value;
   }
@@ -129,46 +206,19 @@ export const getCachedConfig = async (key: string): Promise<string | null> => {
 
 // 获取所有配置（优先从缓存）
 export const getCachedConfigs = async (): Promise<Record<string, string>> => {
-  // 尝试从缓存获取所有配置
-  const configKeys = ["app_name", "app_logo", "app_favicon", "app_bg_image"];
-  const cachedConfigs: Record<string, string> = {};
-  let hasCachedData = false;
+  const { cachedConfigs, hasCachedData } = readCachedConfigs(
+    PUBLIC_BRAND_CONFIG_KEYS,
+  );
 
-  configKeys.forEach((key) => {
-    const cachedValue = configCache.get(key);
+  if (!isLoggedIn()) {
+    const publicConfigs = await fetchPublicBrandConfigs();
 
-    if (cachedValue !== null) {
-      cachedConfigs[key] = cachedValue;
-      hasCachedData = true;
+    if (Object.keys(publicConfigs).length > 0) {
+      return { ...cachedConfigs, ...publicConfigs };
     }
-  });
 
-  const fetchPublicConfigs = async (): Promise<Record<string, string>> => {
-    const publicConfigMap: Record<string, string> = {};
-
-    await Promise.all(
-      configKeys.map(async (key) => {
-        try {
-          const response = await getConfigByName(key);
-
-          if (
-            response.code === 0 &&
-            response.data &&
-            typeof response.data.value === "string"
-          ) {
-            const value = response.data.value;
-
-            publicConfigMap[key] = value;
-            configCache.set(key, value);
-          }
-        } catch {
-          // ignore single key fetch error
-        }
-      }),
-    );
-
-    return publicConfigMap;
-  };
+    return cachedConfigs;
+  }
 
   // 从API获取最新配置
   try {
@@ -177,9 +227,19 @@ export const getCachedConfigs = async (): Promise<Record<string, string>> => {
     if (response.code === 0 && response.data) {
       const configs = response.data;
 
-      // 将所有配置存入缓存
+      // 仅将安全配置存入缓存，敏感项会从 localStorage 中移除
       Object.entries(configs).forEach(([key, value]) => {
-        configCache.set(key, value as string);
+        const normalizedKey = key.trim().toLowerCase();
+
+        if (SENSITIVE_CONFIG_KEYS.has(normalizedKey)) {
+          configCache.remove(normalizedKey);
+
+          return;
+        }
+
+        if (shouldPersistConfigKey(normalizedKey)) {
+          configCache.set(normalizedKey, value as string);
+        }
       });
 
       return configs;
@@ -189,14 +249,14 @@ export const getCachedConfigs = async (): Promise<Record<string, string>> => {
       return cachedConfigs;
     }
 
-    return await fetchPublicConfigs();
+    return await fetchPublicBrandConfigs();
   } catch {
     // API失败时返回缓存的数据
     if (hasCachedData) {
       return cachedConfigs;
     }
 
-    return await fetchPublicConfigs();
+    return await fetchPublicBrandConfigs();
   }
 };
 
@@ -255,7 +315,17 @@ export const updateSiteConfig = async (configMap?: Record<string, string>) => {
   const resolvedConfigMap = configMap ?? (await getCachedConfigs());
 
   Object.entries(resolvedConfigMap).forEach(([key, value]) => {
-    configCache.set(key, String(value));
+    const normalizedKey = key.trim().toLowerCase();
+
+    if (SENSITIVE_CONFIG_KEYS.has(normalizedKey)) {
+      configCache.remove(normalizedKey);
+
+      return;
+    }
+
+    if (shouldPersistConfigKey(normalizedKey)) {
+      configCache.set(normalizedKey, String(value));
+    }
   });
 
   const hasAppName = Object.prototype.hasOwnProperty.call(

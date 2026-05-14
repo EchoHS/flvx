@@ -136,11 +136,16 @@ func New(repo *repo.Repository, jwtSecret string) *Handler {
 		}
 		h.metrics.RecordNodeMetric(nodeID, metricInfo)
 	})
+	h.wsServer.SetUserAuthStateLookup(h.GetUserAuthState)
 	return h
 }
 
 func (h *Handler) WebSocketHandler() http.Handler {
 	return h.wsServer
+}
+
+func (h *Handler) GetUserAuthState(userID int64) (*auth.UserAuthState, error) {
+	return h.repo.GetUserAuthState(userID)
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -152,6 +157,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/user/reset", h.userResetFlow)
 	mux.HandleFunc("/api/v1/user/quota/reset", h.userQuotaReset)
 	mux.HandleFunc("/api/v1/user/groups", h.userGroups)
+	mux.HandleFunc("/api/v1/public/config/get", h.getPublicConfigByName)
 	mux.HandleFunc("/api/v1/config/get", h.getConfigByName)
 	mux.HandleFunc("/api/v1/config/list", h.getConfigs)
 	mux.HandleFunc("/api/v1/config/update", h.updateConfigs)
@@ -334,7 +340,8 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.ErrDefault("账号或密码错误"))
 		return
 	}
-	if user.Pwd != security.MD5(req.Password) {
+	passwordMatched, passwordWasLegacy := security.VerifyPassword(user.Pwd, req.Password)
+	if !passwordMatched {
 		response.WriteJSON(w, response.ErrDefault("账号或密码错误"))
 		return
 	}
@@ -342,8 +349,20 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.ErrDefault("账号被停用"))
 		return
 	}
+	issueAt := time.Now()
+	if passwordWasLegacy {
+		updatedAt := time.Now().UnixMilli()
+		hashedPassword, err := security.HashPassword(req.Password)
+		if err != nil {
+			log.Printf("legacy password rehash skipped user_id=%d path=login err=%v", user.ID, err)
+		} else if err := h.repo.UpdateUserPassword(user.ID, hashedPassword, updatedAt); err != nil {
+			log.Printf("legacy password rehash update skipped user_id=%d path=login err=%v", user.ID, err)
+		} else {
+			issueAt = time.UnixMilli(updatedAt + 1)
+		}
+	}
 
-	token, err := auth.GenerateToken(user.ID, user.User, user.RoleID, h.jwtSecret)
+	token, err := auth.GenerateTokenAt(user.ID, user.User, user.RoleID, h.jwtSecret, issueAt)
 	if err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
@@ -557,9 +576,26 @@ func (h *Handler) openAPISubStore(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}
-	if user == nil || user.Pwd != security.MD5(password) {
+	if user == nil {
 		response.WriteJSON(w, response.ErrDefault("鉴权失败"))
 		return
+	}
+	passwordMatched, passwordWasLegacy := security.VerifyPassword(user.Pwd, password)
+	if !passwordMatched {
+		response.WriteJSON(w, response.ErrDefault("鉴权失败"))
+		return
+	}
+	if user.Status == 0 {
+		response.WriteJSON(w, response.ErrDefault("账号被停用"))
+		return
+	}
+	if passwordWasLegacy {
+		hashedPassword, err := security.HashPassword(password)
+		if err != nil {
+			log.Printf("legacy password rehash skipped user_id=%d path=sub_store err=%v", user.ID, err)
+		} else if err := h.repo.UpdateUserPassword(user.ID, hashedPassword, time.Now().UnixMilli()); err != nil {
+			log.Printf("legacy password rehash update skipped user_id=%d path=sub_store err=%v", user.ID, err)
+		}
 	}
 
 	const giga = int64(1024 * 1024 * 1024)
@@ -948,6 +984,10 @@ func (h *Handler) updateConfigs(w http.ResponseWriter, r *http.Request) {
 		if key == "" {
 			continue
 		}
+		if repo.IsSensitiveConfigKey(key) {
+			response.WriteJSON(w, response.Err(403, "禁止访问敏感配置"))
+			return
+		}
 
 		if protectedKeys[key] && isCommercial != "true" {
 			response.WriteJSON(w, response.ErrDefault("需要商业版授权"))
@@ -983,6 +1023,10 @@ func (h *Handler) updateSingleConfig(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		response.WriteJSON(w, response.ErrDefault("配置名称不能为空"))
+		return
+	}
+	if repo.IsSensitiveConfigKey(name) {
+		response.WriteJSON(w, response.Err(403, "禁止访问敏感配置"))
 		return
 	}
 
@@ -1255,7 +1299,8 @@ func (h *Handler) updatePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Pwd != security.MD5(req.CurrentPassword) {
+	passwordMatched, _ := security.VerifyPassword(user.Pwd, req.CurrentPassword)
+	if !passwordMatched {
 		response.WriteJSON(w, response.ErrDefault("当前密码错误"))
 		return
 	}
@@ -1270,7 +1315,12 @@ func (h *Handler) updatePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.repo.UpdateUserNameAndPassword(userID, req.NewUsername, security.MD5(req.NewPassword), time.Now().UnixMilli()); err != nil {
+	hashedPassword, err := security.HashPassword(req.NewPassword)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if err := h.repo.UpdateUserNameAndPassword(userID, req.NewUsername, hashedPassword, time.Now().UnixMilli()); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}

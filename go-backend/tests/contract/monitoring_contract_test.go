@@ -16,6 +16,7 @@ import (
 func TestNodeMetricsEndpoints(t *testing.T) {
 	secret := "monitoring-jwt-secret"
 	router, repo := setupContractRouter(t, secret)
+	seedContractUser(t, repo, 2, "normal_user", 1, 1)
 
 	adminToken, err := auth.GenerateToken(1, "admin_user", 0, secret)
 	if err != nil {
@@ -1302,6 +1303,7 @@ func TestMonitoringAuthRequired(t *testing.T) {
 func TestMonitorAccessEndpoint(t *testing.T) {
 	secret := "monitoring-jwt-secret"
 	router, repo := setupContractRouter(t, secret)
+	seedContractUser(t, repo, 2, "normal_user", 1, 1)
 
 	adminToken, err := auth.GenerateToken(1, "admin_user", 0, secret)
 	if err != nil {
@@ -1357,6 +1359,7 @@ func TestMonitorAccessEndpoint(t *testing.T) {
 func TestMonitoringPermissionRequired(t *testing.T) {
 	secret := "monitoring-jwt-secret"
 	router, repo := setupContractRouter(t, secret)
+	seedContractUser(t, repo, 2, "normal_user", 1, 1)
 
 	userToken, err := auth.GenerateToken(2, "normal_user", 1, secret)
 	if err != nil {

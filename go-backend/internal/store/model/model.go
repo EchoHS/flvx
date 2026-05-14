@@ -10,20 +10,21 @@ import "database/sql"
 // User maps to the "user" table. PostgreSQL treats "user" as a reserved
 // word, so TableName() is required for correct quoting.
 type User struct {
-	ID            int64         `gorm:"primaryKey;autoIncrement"`
-	User          string        `gorm:"column:user;type:varchar(100);not null"`
-	Pwd           string        `gorm:"type:varchar(100);not null"`
-	RoleID        int           `gorm:"column:role_id;not null"`
-	ExpTime       int64         `gorm:"column:exp_time;not null"`
-	Flow          int64         `gorm:"not null"`
-	InFlow        int64         `gorm:"column:in_flow;not null;default:0"`
-	OutFlow       int64         `gorm:"column:out_flow;not null;default:0"`
-	FlowResetTime int64         `gorm:"column:flow_reset_time;not null"`
-	Num           int           `gorm:"not null"`
-	CreatedTime   int64         `gorm:"column:created_time;not null"`
-	UpdatedTime   sql.NullInt64 `gorm:"column:updated_time"`
-	Status        int           `gorm:"not null"`
-	MaxConn       int           `gorm:"column:max_conn;not null;default:0"`
+	ID                int64         `gorm:"primaryKey;autoIncrement"`
+	User              string        `gorm:"column:user;type:varchar(100);not null"`
+	Pwd               string        `gorm:"type:varchar(100);not null"`
+	RoleID            int           `gorm:"column:role_id;not null"`
+	ExpTime           int64         `gorm:"column:exp_time;not null"`
+	Flow              int64         `gorm:"not null"`
+	InFlow            int64         `gorm:"column:in_flow;not null;default:0"`
+	OutFlow           int64         `gorm:"column:out_flow;not null;default:0"`
+	FlowResetTime     int64         `gorm:"column:flow_reset_time;not null"`
+	Num               int           `gorm:"not null"`
+	CreatedTime       int64         `gorm:"column:created_time;not null"`
+	UpdatedTime       sql.NullInt64 `gorm:"column:updated_time"`
+	Status            int           `gorm:"not null"`
+	PasswordChangedAt int64         `gorm:"column:password_changed_at;not null;default:0"`
+	MaxConn           int           `gorm:"column:max_conn;not null;default:0"`
 }
 
 func (User) TableName() string { return "user" }
