@@ -87,6 +87,7 @@ type Node struct {
 	UDPListenAddr           string         `gorm:"column:udp_listen_addr;type:varchar(100);not null;default:'[::]'"`
 	Inx                     int            `gorm:"not null;default:0"`
 	IsRemote                int            `gorm:"column:is_remote;default:0"`
+	ForwardMode             string         `gorm:"column:forward_mode;type:varchar(20);not null;default:'agent'"`
 	RemoteURL               sql.NullString `gorm:"column:remote_url;type:text"`
 	RemoteToken             sql.NullString `gorm:"column:remote_token;type:text"`
 	RemoteConfig            sql.NullString `gorm:"column:remote_config;type:text"`
@@ -94,6 +95,41 @@ type Node struct {
 }
 
 func (Node) TableName() string { return "node" }
+
+type NodeSSHConfig struct {
+	ID          int64          `gorm:"primaryKey;autoIncrement"`
+	NodeID      int64          `gorm:"column:node_id;not null;uniqueIndex"`
+	Host        string         `gorm:"type:varchar(255);not null"`
+	Port        int            `gorm:"not null;default:22"`
+	Username    string         `gorm:"type:varchar(100);not null"`
+	AuthType    string         `gorm:"column:auth_type;type:varchar(20);not null"`
+	Password    sql.NullString `gorm:"type:text"`
+	PrivateKey  sql.NullString `gorm:"column:private_key;type:text"`
+	Passphrase  sql.NullString `gorm:"type:text"`
+	SudoMode    string         `gorm:"column:sudo_mode;type:varchar(20);not null;default:'none'"`
+	CreatedTime int64          `gorm:"column:created_time;not null"`
+	UpdatedTime int64          `gorm:"column:updated_time;not null"`
+}
+
+func (NodeSSHConfig) TableName() string { return "node_ssh_config" }
+
+type NftRuleBinding struct {
+	ID          int64  `gorm:"primaryKey;autoIncrement"`
+	ForwardID   int64  `gorm:"column:forward_id;not null;uniqueIndex:idx_nft_rule_binding_forward_node;index"`
+	NodeID      int64  `gorm:"column:node_id;not null;uniqueIndex:idx_nft_rule_binding_forward_node;index"`
+	InPort      int    `gorm:"column:in_port;not null"`
+	Protocols   string `gorm:"type:varchar(20);not null;default:'tcp,udp'"`
+	TargetAddr  string `gorm:"column:target_addr;type:text;not null"`
+	BindIP      string `gorm:"column:bind_ip;type:text;not null;default:''"`
+	RuleHash    string `gorm:"column:rule_hash;type:varchar(128);not null;default:''"`
+	Status      string `gorm:"type:varchar(20);not null;default:'pending'"`
+	LastError   string `gorm:"column:last_error;type:text;not null;default:''"`
+	AppliedTime int64  `gorm:"column:applied_time;not null;default:0"`
+	CreatedTime int64  `gorm:"column:created_time;not null"`
+	UpdatedTime int64  `gorm:"column:updated_time;not null"`
+}
+
+func (NftRuleBinding) TableName() string { return "nft_rule_binding" }
 
 type SpeedLimit struct {
 	ID          int64          `gorm:"primaryKey;autoIncrement"`
@@ -602,6 +638,7 @@ type NodeRecord struct {
 	UDPListenAddr string
 	InterfaceName string
 	IsRemote      int
+	ForwardMode   string
 	RemoteURL     string
 	RemoteToken   string
 	RemoteConfig  string

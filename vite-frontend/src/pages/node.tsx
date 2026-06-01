@@ -109,6 +109,17 @@ interface Node {
   socks?: number; // 0 关 1 开
   status: number;
   isRemote?: number;
+  forwardMode?: "agent" | "nftables";
+  sshConfig?: {
+    host?: string;
+    port?: number;
+    username?: string;
+    authType?: "password" | "private_key";
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+    sudoMode?: "none" | "sudo" | "sudo_su";
+  } | null;
   remoteUrl?: string;
   syncError?: string;
   connectionStatus: "online" | "offline";
@@ -132,6 +143,15 @@ interface NodeForm {
   udpListenAddr: string;
   interfaceName: string;
   extraIPs: string;
+  forwardMode: "agent" | "nftables";
+  sshHost: string;
+  sshPort: string;
+  sshUsername: string;
+  sshAuthType: "password" | "private_key";
+  sshPassword: string;
+  sshPrivateKey: string;
+  sshPassphrase: string;
+  sshSudoMode: "none" | "sudo" | "sudo_su";
   http: number; // 0 关 1 开
   tls: number; // 0 关 1 开
   socks: number; // 0 关 1 开
@@ -344,11 +364,25 @@ export default function NodePage() {
     udpListenAddr: "[::]",
     interfaceName: "",
     extraIPs: "",
+    forwardMode: "agent",
+    sshHost: "",
+    sshPort: "22",
+    sshUsername: "",
+    sshAuthType: "private_key",
+    sshPassword: "",
+    sshPrivateKey: "",
+    sshPassphrase: "",
+    sshSudoMode: "none",
     http: 0,
     tls: 0,
     socks: 0,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const isNftablesMode = form.forwardMode === "nftables";
+  const protocolControlsDisabled = protocolDisabled || isNftablesMode;
+  const protocolControlsReason = isNftablesMode
+    ? "nftables 模式不支持 agent 协议开关"
+    : protocolDisabledReason || "等待节点上线后再设置";
 
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -856,6 +890,27 @@ export default function NodePage() {
       newErrors.port = portValidation.error || "端口格式错误";
     }
 
+    if (form.forwardMode === "nftables") {
+      if (!form.sshHost.trim()) {
+        newErrors.sshHost = "请输入 SSH 主机";
+      }
+      const sshPort = Number(form.sshPort);
+
+      if (!Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535) {
+        newErrors.sshPort = "SSH 端口必须为 1-65535";
+      }
+      if (!form.sshUsername.trim()) {
+        newErrors.sshUsername = "请输入 SSH 用户名";
+      }
+      if (form.sshAuthType === "password") {
+        if (!isEdit && !form.sshPassword.trim()) {
+          newErrors.sshPassword = "请输入 SSH 密码";
+        }
+      } else if (!isEdit && !form.sshPrivateKey.trim()) {
+        newErrors.sshPrivateKey = "请输入 SSH 私钥";
+      }
+    }
+
     setErrors(newErrors);
 
     return Object.keys(newErrors).length === 0;
@@ -898,15 +953,28 @@ export default function NodePage() {
       udpListenAddr: node.udpListenAddr || "[::]",
       interfaceName: (node as any).interfaceName || "",
       extraIPs: node.extraIPs || "",
+      forwardMode: node.forwardMode === "nftables" ? "nftables" : "agent",
+      sshHost: node.sshConfig?.host || normalizedHost || legacy,
+      sshPort: String(node.sshConfig?.port || 22),
+      sshUsername: node.sshConfig?.username || "",
+      sshAuthType: node.sshConfig?.authType || "private_key",
+      sshPassword: node.sshConfig?.password || "",
+      sshPrivateKey: node.sshConfig?.privateKey || "",
+      sshPassphrase: node.sshConfig?.passphrase || "",
+      sshSudoMode: node.sshConfig?.sudoMode || "none",
       http: typeof node.http === "number" ? node.http : 1,
       tls: typeof node.tls === "number" ? node.tls : 1,
       socks: typeof node.socks === "number" ? node.socks : 1,
     });
     const offline = node.connectionStatus !== "online";
 
-    setProtocolDisabled(offline);
+    setProtocolDisabled(offline || node.forwardMode === "nftables");
     setProtocolDisabledReason(
-      offline ? "节点未在线，等待节点上线后再设置" : "",
+      node.forwardMode === "nftables"
+        ? "nftables 模式不支持 agent 协议开关"
+        : offline
+          ? "节点未在线，等待节点上线后再设置"
+          : "",
     );
     setDialogVisible(true);
   };
@@ -1166,12 +1234,33 @@ export default function NodePage() {
     try {
       const apiCall = isEdit ? updateNode : createNode;
       const { serverHost, ...rest } = form;
+      const sshConfig =
+        form.forwardMode === "nftables"
+          ? {
+              host: form.sshHost.trim(),
+              port: Number(form.sshPort || 22),
+              username: form.sshUsername.trim(),
+              authType: form.sshAuthType,
+              password:
+                form.sshAuthType === "password"
+                  ? form.sshPassword.trim()
+                  : undefined,
+              privateKey:
+                form.sshAuthType === "private_key"
+                  ? form.sshPrivateKey
+                  : undefined,
+              passphrase: form.sshPassphrase,
+              sudoMode: form.sshSudoMode,
+            }
+          : null;
       const data = {
         ...rest,
         remark: form.remark.trim(),
         expiryTime: form.expiryTime,
         renewalCycle: form.renewalCycle,
         extraIPs: form.extraIPs,
+        forwardMode: form.forwardMode,
+        sshConfig,
         serverIp:
           form.serverIpV4?.trim() ||
           form.serverIpV6?.trim() ||
@@ -1206,6 +1295,8 @@ export default function NodePage() {
                     tcpListenAddr: form.tcpListenAddr,
                     udpListenAddr: form.udpListenAddr,
                     interfaceName: form.interfaceName,
+                    forwardMode: form.forwardMode,
+                    sshConfig,
                     http: form.http,
                     tls: form.tls,
                     socks: form.socks,
@@ -1242,6 +1333,15 @@ export default function NodePage() {
       udpListenAddr: "[::]",
       interfaceName: "",
       extraIPs: "",
+      forwardMode: "agent",
+      sshHost: "",
+      sshPort: "22",
+      sshUsername: "",
+      sshAuthType: "password",
+      sshPassword: "",
+      sshPrivateKey: "",
+      sshPassphrase: "",
+      sshSudoMode: "none",
       http: 0,
       tls: 0,
       socks: 0,
@@ -2581,6 +2681,43 @@ export default function NodePage() {
                 }
               />
 
+              <Select
+                label="转发模式"
+                selectedKeys={[form.forwardMode]}
+                variant="bordered"
+                onSelectionChange={(keys) => {
+                  const selected = Array.from(keys)[0] as
+                    | NodeForm["forwardMode"]
+                    | undefined;
+
+                  setForm((prev) => ({
+                    ...prev,
+                    forwardMode: selected || "agent",
+                  }));
+                }}
+              >
+                <SelectItem key="agent" textValue="agent">
+                  agent 模式
+                </SelectItem>
+                <SelectItem key="nftables" textValue="nftables">
+                  nftables 模式
+                </SelectItem>
+              </Select>
+
+              {form.forwardMode === "nftables" ? (
+                <Alert
+                  color="warning"
+                  description="nftables 模式仅支持纯转发，不支持隧道、流量控制和 agent 安装，规则将由面板通过 SSH 下发。"
+                  variant="flat"
+                />
+              ) : (
+                <Alert
+                  color="primary"
+                  description="agent 模式会继续使用节点 agent 执行转发与管理操作。"
+                  variant="flat"
+                />
+              )}
+
               {/* 高级配置 */}
               <Accordion className="px-0" variant="light">
                 <AccordionItem
@@ -2594,6 +2731,177 @@ export default function NodePage() {
                   }
                 >
                   <div className="space-y-4 pb-2">
+                    {form.forwardMode === "nftables" ? (
+                      <div className="space-y-4 rounded-xl border border-warning-200 bg-warning-50/60 p-4 dark:border-warning-500/30 dark:bg-warning-950/20">
+                        <div>
+                          <div className="text-sm font-medium text-warning-700 dark:text-warning-300">
+                            SSH 配置
+                          </div>
+                          <div className="text-xs text-default-500">
+                            面板会通过 SSH 下发 nftables 规则，不会安装 agent。
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <Input
+                            errorMessage={errors.sshHost}
+                            isInvalid={!!errors.sshHost}
+                            label="SSH 主机"
+                            placeholder="例如: 192.0.2.10"
+                            value={form.sshHost}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                sshHost: e.target.value,
+                              }))
+                            }
+                          />
+
+                          <Input
+                            errorMessage={errors.sshPort}
+                            isInvalid={!!errors.sshPort}
+                            label="SSH 端口"
+                            placeholder="22"
+                            value={form.sshPort}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                sshPort: e.target.value,
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <Input
+                            errorMessage={errors.sshUsername}
+                            isInvalid={!!errors.sshUsername}
+                            label="SSH 用户名"
+                            placeholder="例如: root"
+                            value={form.sshUsername}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                sshUsername: e.target.value,
+                              }))
+                            }
+                          />
+
+                          <Select
+                            label="SSH 认证方式"
+                            selectedKeys={[form.sshAuthType]}
+                            variant="bordered"
+                            onSelectionChange={(keys) => {
+                              const selected = Array.from(keys)[0] as
+                                | "password"
+                                | "private_key"
+                                | undefined;
+
+                              setForm((prev) => ({
+                                ...prev,
+                                sshAuthType: selected || "private_key",
+                              }));
+                            }}
+                          >
+                            <SelectItem
+                              key="private_key"
+                              textValue="private_key"
+                            >
+                              私钥
+                            </SelectItem>
+                            <SelectItem key="password" textValue="password">
+                              密码
+                            </SelectItem>
+                          </Select>
+                        </div>
+
+                        {form.sshAuthType === "password" ? (
+                          <Input
+                            errorMessage={errors.sshPassword}
+                            isInvalid={!!errors.sshPassword}
+                            label="SSH 密码"
+                            placeholder="请输入 SSH 密码"
+                            type="password"
+                            value={form.sshPassword}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                sshPassword: e.target.value,
+                              }))
+                            }
+                          />
+                        ) : (
+                          <Textarea
+                            errorMessage={errors.sshPrivateKey}
+                            isInvalid={!!errors.sshPrivateKey}
+                            label="SSH 私钥"
+                            minRows={6}
+                            placeholder="粘贴 PEM 格式私钥内容"
+                            value={form.sshPrivateKey}
+                            variant="bordered"
+                            onChange={(e) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                sshPrivateKey: e.target.value,
+                              }))
+                            }
+                          />
+                        )}
+
+                        <Input
+                          label="SSH 私钥密码短语"
+                          placeholder="可选"
+                          type="password"
+                          value={form.sshPassphrase}
+                          variant="bordered"
+                          onChange={(e) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              sshPassphrase: e.target.value,
+                            }))
+                          }
+                        />
+
+                        <Select
+                          label="sudo 提权方式"
+                          selectedKeys={[form.sshSudoMode]}
+                          variant="bordered"
+                          onSelectionChange={(keys) => {
+                            const selected = Array.from(keys)[0] as
+                              | "none"
+                              | "sudo"
+                              | "sudo_su"
+                              | undefined;
+
+                            setForm((prev) => ({
+                              ...prev,
+                              sshSudoMode: selected || "none",
+                            }));
+                          }}
+                        >
+                          <SelectItem key="none" textValue="none">
+                            无需提权
+                          </SelectItem>
+                          <SelectItem key="sudo" textValue="sudo">
+                            sudo
+                          </SelectItem>
+                          <SelectItem key="sudo_su" textValue="sudo_su">
+                            sudo su
+                          </SelectItem>
+                        </Select>
+                      </div>
+                    ) : (
+                      <Alert
+                        color="primary"
+                        description="agent 模式下无需填写 SSH 配置；节点安装 agent 后会自行接管转发。"
+                        variant="flat"
+                      />
+                    )}
+
                     <Input
                       description="用于多IP服务器指定使用那个IP请求远程地址，不懂的默认为空就行"
                       errorMessage={errors.interfaceName}
@@ -2677,18 +2985,16 @@ export default function NodePage() {
                       <div className="text-xs text-default-500 mb-2">
                         开启开关以屏蔽对应协议
                       </div>
-                      {protocolDisabled && (
+                      {protocolControlsDisabled && (
                         <Alert
                           className="mb-2"
                           color="warning"
-                          description={
-                            protocolDisabledReason || "等待节点上线后再设置"
-                          }
+                          description={protocolControlsReason}
                           variant="flat"
                         />
                       )}
                       <div
-                        className={`grid grid-cols-1 sm:grid-cols-3 gap-3 bg-content1/30 dark:bg-content1/20 p-3 rounded-md border border-divider ${protocolDisabled ? "opacity-70" : ""}`}
+                        className={`grid grid-cols-1 sm:grid-cols-3 gap-3 bg-content1/30 dark:bg-content1/20 p-3 rounded-md border border-divider ${protocolControlsDisabled ? "opacity-70" : ""}`}
                       >
                         {/* HTTP tile */}
                         <div className="px-3 py-3 rounded-lg bg-content1/55 dark:bg-content1/35 border border-divider hover:border-primary-200 dark:hover:border-primary-500/30 transition-colors">
@@ -2715,7 +3021,7 @@ export default function NodePage() {
                               禁用/启用
                             </div>
                             <Switch
-                              isDisabled={protocolDisabled}
+                              isDisabled={protocolControlsDisabled}
                               isSelected={form.http === 1}
                               size="sm"
                               onValueChange={(v) =>
@@ -2762,7 +3068,7 @@ export default function NodePage() {
                               禁用/启用
                             </div>
                             <Switch
-                              isDisabled={protocolDisabled}
+                              isDisabled={protocolControlsDisabled}
                               isSelected={form.tls === 1}
                               size="sm"
                               onValueChange={(v) =>
@@ -2801,7 +3107,7 @@ export default function NodePage() {
                               禁用/启用
                             </div>
                             <Switch
-                              isDisabled={protocolDisabled}
+                              isDisabled={protocolControlsDisabled}
                               isSelected={form.socks === 1}
                               size="sm"
                               onValueChange={(v) =>

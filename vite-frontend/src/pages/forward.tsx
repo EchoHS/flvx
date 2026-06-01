@@ -106,6 +106,7 @@ import { JwtUtil } from "@/utils/jwt";
 interface Forward {
   id: number;
   name: string;
+  forwardMode?: "agent" | "nftables";
   tunnelId: number;
   tunnelName: string;
   tunnelTrafficRatio?: number;
@@ -134,6 +135,7 @@ interface Forward {
 interface Tunnel {
   id: number;
   name: string;
+  forwardMode?: "agent" | "nftables";
   type?: number;
   inIp?: string;
   inNodeId?: Array<{ nodeId: number }>;

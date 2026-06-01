@@ -220,7 +220,7 @@ func (r *Repository) GetUserDefaultsForTunnel(userID int64) (flow int64, num int
 	return user.Flow, user.Num, user.ExpTime, user.FlowResetTime, nil
 }
 
-func (r *Repository) CreateNode(name, secret, serverIP string, serverIPV4, serverIPV6, port, interfaceName, version, remark, expiryTime, renewalCycle interface{}, httpFlag, tlsFlag, socksFlag int, now int64, status int, tcpAddr, udpAddr string, inx, isRemote int, remoteURL, remoteToken, remoteConfig, extraIPs interface{}) error {
+func (r *Repository) CreateNode(name, secret, serverIP string, serverIPV4, serverIPV6, port, interfaceName, version, remark, expiryTime, renewalCycle interface{}, httpFlag, tlsFlag, socksFlag int, now int64, status int, tcpAddr, udpAddr string, inx, isRemote int, remoteURL, remoteToken, remoteConfig, extraIPs interface{}, forwardMode string) error {
 	if r == nil || r.db == nil {
 		return errors.New("repository not initialized")
 	}
@@ -247,6 +247,7 @@ func (r *Repository) CreateNode(name, secret, serverIP string, serverIPV4, serve
 		UDPListenAddr: udpAddr,
 		Inx:           inx,
 		IsRemote:      isRemote,
+		ForwardMode:   defaultNodeForwardMode(forwardMode),
 		RemoteURL:     nullStringFromInterface(remoteURL),
 		RemoteToken:   nullStringFromInterface(remoteToken),
 		RemoteConfig:  nullStringFromInterface(remoteConfig),
@@ -266,31 +267,44 @@ func (r *Repository) GetNodeStatusFields(nodeID int64) (status, httpFlag, tlsFla
 	return node.Status, node.HTTP, node.TLS, node.Socks, nil
 }
 
-func (r *Repository) UpdateNode(id int64, name, serverIP string, serverIPV4, serverIPV6, port, interfaceName, extraIPs, remark, expiryTime, renewalCycle interface{}, httpFlag, tlsFlag, socksFlag int, tcpAddr, udpAddr string, now int64) error {
+func (r *Repository) UpdateNode(id int64, name, serverIP string, serverIPV4, serverIPV6, port, interfaceName, extraIPs, remark, expiryTime, renewalCycle interface{}, forwardMode string, httpFlag, tlsFlag, socksFlag int, tcpAddr, udpAddr string, now int64) error {
 	if r == nil || r.db == nil {
 		return errors.New("repository not initialized")
 	}
+	updates := map[string]interface{}{
+		"name":                      name,
+		"remark":                    nullStringFromInterface(remark),
+		"expiry_time":               nullInt64FromInterface(expiryTime),
+		"renewal_cycle":             nullStringFromInterface(renewalCycle),
+		"server_ip":                 serverIP,
+		"server_ip_v4":              nullStringFromInterface(serverIPV4),
+		"server_ip_v6":              nullStringFromInterface(serverIPV6),
+		"extra_ips":                 nullStringFromInterface(extraIPs),
+		"port":                      stringFromInterface(port),
+		"interface_name":            nullStringFromInterface(interfaceName),
+		"http":                      httpFlag,
+		"tls":                       tlsFlag,
+		"socks":                     socksFlag,
+		"tcp_listen_addr":           tcpAddr,
+		"udp_listen_addr":           udpAddr,
+		"updated_time":              sql.NullInt64{Int64: now, Valid: true},
+		"expiry_reminder_dismissed": 0,
+	}
+	if strings.TrimSpace(forwardMode) != "" {
+		updates["forward_mode"] = defaultNodeForwardMode(forwardMode)
+	}
 	return r.db.Model(&model.Node{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"name":                      name,
-			"remark":                    nullStringFromInterface(remark),
-			"expiry_time":               nullInt64FromInterface(expiryTime),
-			"renewal_cycle":             nullStringFromInterface(renewalCycle),
-			"server_ip":                 serverIP,
-			"server_ip_v4":              nullStringFromInterface(serverIPV4),
-			"server_ip_v6":              nullStringFromInterface(serverIPV6),
-			"extra_ips":                 nullStringFromInterface(extraIPs),
-			"port":                      stringFromInterface(port),
-			"interface_name":            nullStringFromInterface(interfaceName),
-			"http":                      httpFlag,
-			"tls":                       tlsFlag,
-			"socks":                     socksFlag,
-			"tcp_listen_addr":           tcpAddr,
-			"udp_listen_addr":           udpAddr,
-			"updated_time":              sql.NullInt64{Int64: now, Valid: true},
-			"expiry_reminder_dismissed": 0,
-		}).Error
+		Updates(updates).Error
+}
+
+func defaultNodeForwardMode(mode string) string {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "nftables":
+		return "nftables"
+	default:
+		return "agent"
+	}
 }
 
 func (r *Repository) GetNodeSecret(nodeID int64) (string, error) {

@@ -8,6 +8,7 @@ interface TunnelFormInput {
   inNodeId: TunnelChainNode[];
   outNodeId?: TunnelChainNode[];
   trafficRatio: number;
+  forwardMode?: "agent" | "nftables";
   probeTargetHost?: string;
   probeTargetPort?: number;
 }
@@ -15,6 +16,7 @@ interface TunnelFormInput {
 interface TunnelNodeInput {
   id: number;
   status: number;
+  forwardMode?: "agent" | "nftables";
 }
 
 const isValidProbeIPv4 = (host: string) => {
@@ -116,6 +118,7 @@ export const createTunnelFormDefaults = () => {
     chainNodes: [],
     flow: 1,
     trafficRatio: 1.0,
+    forwardMode: "agent",
     inIp: "",
     ipPreference: "",
     probeTargetHost: "",
@@ -183,6 +186,10 @@ export const validateTunnelForm = (
   }
 
   if (form.type === 2) {
+    if (form.forwardMode === "nftables") {
+      errors.type = "nftables 节点仅支持端口转发";
+    }
+
     if (!form.outNodeId || form.outNodeId.length === 0) {
       errors.outNodeId = "请至少选择一个出口节点";
     } else {
@@ -204,6 +211,23 @@ export const validateTunnelForm = (
 
       if (overlap.length > 0) {
         errors.outNodeId = "隧道转发模式下，入口和出口不能有相同节点";
+      }
+    }
+  }
+
+  if (form.forwardMode === "nftables") {
+    const nftEntryNodes = (form.inNodeId || []).filter((item) => {
+      const node = nodes.find((n) => n.id === item.nodeId);
+
+      return node?.forwardMode === "nftables";
+    });
+
+    if (nftEntryNodes.length > 0) {
+      if (form.inNodeId.length !== 1) {
+        errors.inNodeId = "nftables 节点仅支持单入口隧道";
+      }
+      if ((form.outNodeId || []).length > 0) {
+        errors.outNodeId = "nftables 节点不支持出口节点配置";
       }
     }
   }

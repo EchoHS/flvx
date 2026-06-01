@@ -341,6 +341,11 @@ func (h *Handler) nodeCreate(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UnixMilli()
 	inx := h.repo.NextIndex("node")
+	forwardMode := defaultNodeForwardMode(asString(req["forwardMode"]))
+	status := 0
+	if forwardMode == "nftables" {
+		status = 1
+	}
 	if err := h.repo.CreateNode(
 		name,
 		randomToken(16),
@@ -357,7 +362,7 @@ func (h *Handler) nodeCreate(w http.ResponseWriter, r *http.Request) {
 		asInt(req["tls"], 0),
 		asInt(req["socks"], 0),
 		now,
-		0,
+		status,
 		defaultString(asString(req["tcpListenAddr"]), "[::]"),
 		defaultString(asString(req["udpListenAddr"]), "[::]"),
 		inx,
@@ -366,7 +371,17 @@ func (h *Handler) nodeCreate(w http.ResponseWriter, r *http.Request) {
 		nullableText(asString(req["remoteToken"])),
 		nullableText(asString(req["remoteConfig"])),
 		nullableText(asString(req["extraIPs"])),
+		forwardMode,
 	); err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	nodeID, err := h.findCreatedNodeID(name, serverIP)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if err := h.persistNodeSSHConfig(nodeID, req, forwardMode, now, false); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}
@@ -417,6 +432,7 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UnixMilli()
+	forwardMode := defaultNodeForwardMode(strings.TrimSpace(asString(req["forwardMode"])))
 	if err := h.repo.UpdateNode(id,
 		asString(req["name"]),
 		serverIP,
@@ -428,6 +444,7 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 		nullableText(strings.TrimSpace(asString(req["remark"]))),
 		nullableUnixMilli(asInt64(req["expiryTime"], 0)),
 		nullableText(normalizeNodeRenewalCycle(asString(req["renewalCycle"]))),
+		forwardMode,
 		newHTTP,
 		newTLS,
 		newSocks,
@@ -438,7 +455,140 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}
+	if err := h.persistNodeSSHConfig(id, req, forwardMode, now, true); err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if forwardMode == "nftables" && currentStatus != 1 {
+		if err := h.repo.UpdateNodeStatus(id, 1); err != nil {
+			response.WriteJSON(w, response.Err(-2, err.Error()))
+			return
+		}
+	}
 	response.WriteJSON(w, response.OKEmpty())
+}
+
+func (h *Handler) findCreatedNodeID(name, serverIP string) (int64, error) {
+	if h == nil || h.repo == nil {
+		return 0, errors.New("handler not initialized")
+	}
+	nodes, err := h.repo.ListNodes()
+	if err != nil {
+		return 0, err
+	}
+	for i := len(nodes) - 1; i >= 0; i-- {
+		item := nodes[i]
+		if asString(item["name"]) != name {
+			continue
+		}
+		if asString(item["serverIp"]) != serverIP {
+			continue
+		}
+		if nodeID := asInt64(item["id"], 0); nodeID > 0 {
+			return nodeID, nil
+		}
+	}
+	return 0, errors.New("节点创建成功，但未能查询到节点记录")
+}
+
+func (h *Handler) persistNodeSSHConfig(nodeID int64, req map[string]interface{}, forwardMode string, now int64, preserveSecrets bool) error {
+	if h == nil || h.repo == nil {
+		return errors.New("handler not initialized")
+	}
+	if nodeID <= 0 {
+		return errors.New("节点ID不能为空")
+	}
+	if forwardMode != "nftables" {
+		return h.repo.DeleteNodeSSHConfig(nodeID)
+	}
+	cfgMap := asMap(req["sshConfig"])
+	host := strings.TrimSpace(asString(cfgMap["host"]))
+	if host == "" {
+		host = strings.TrimSpace(asString(req["serverIp"]))
+	}
+	port := asInt(cfgMap["port"], 22)
+	username := strings.TrimSpace(asString(cfgMap["username"]))
+	authType := strings.TrimSpace(asString(cfgMap["authType"]))
+	password := asString(cfgMap["password"])
+	privateKey := asString(cfgMap["privateKey"])
+	passphrase := asString(cfgMap["passphrase"])
+	sudoMode := strings.TrimSpace(asString(cfgMap["sudoMode"]))
+
+	if preserveSecrets {
+		existing, err := h.repo.GetNodeSSHConfig(nodeID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if existing != nil {
+			if host == "" {
+				host = strings.TrimSpace(existing.Host)
+			}
+			if port <= 0 {
+				port = existing.Port
+			}
+			if username == "" {
+				username = strings.TrimSpace(existing.Username)
+			}
+			if authType == "" {
+				authType = strings.TrimSpace(existing.AuthType)
+			}
+			if strings.TrimSpace(password) == "" && existing.Password.Valid {
+				password = existing.Password.String
+			}
+			if strings.TrimSpace(privateKey) == "" && existing.PrivateKey.Valid {
+				privateKey = existing.PrivateKey.String
+			}
+			if strings.TrimSpace(passphrase) == "" && existing.Passphrase.Valid {
+				passphrase = existing.Passphrase.String
+			}
+			if sudoMode == "" {
+				sudoMode = strings.TrimSpace(existing.SudoMode)
+			}
+		}
+	}
+
+	if host == "" || username == "" {
+		return errors.New("nftables 节点 SSH 配置不完整")
+	}
+	if port <= 0 || port > 65535 {
+		return errors.New("nftables 节点 SSH 端口无效")
+	}
+
+	authType = strings.ToLower(authType)
+	switch authType {
+	case "password":
+		if strings.TrimSpace(password) == "" {
+			return errors.New("nftables 节点 SSH 密码不能为空")
+		}
+		privateKey = ""
+	case "private_key", "":
+		authType = "private_key"
+		if strings.TrimSpace(privateKey) == "" {
+			return errors.New("nftables 节点 SSH 私钥不能为空")
+		}
+		password = ""
+	default:
+		return errors.New("nftables 节点 SSH 认证方式无效")
+	}
+
+	switch strings.ToLower(sudoMode) {
+	case "", "none":
+		sudoMode = "none"
+	case "sudo", "sudo_su":
+	default:
+		return errors.New("nftables 节点 sudo 模式无效")
+	}
+
+	return h.repo.UpsertNodeSSHConfig(nodeID, repo.NftSSHConfigInput{
+		Host:       host,
+		Port:       port,
+		Username:   username,
+		AuthType:   authType,
+		Password:   password,
+		PrivateKey: privateKey,
+		Passphrase: passphrase,
+		SudoMode:   sudoMode,
+	}, now)
 }
 
 func (h *Handler) nodeDelete(w http.ResponseWriter, r *http.Request) {
@@ -647,6 +797,16 @@ func (h *Handler) tunnelCreate(w http.ResponseWriter, r *http.Request) {
 	runtimeState.IPPreference = ipPreference
 	if strings.TrimSpace(inIP) == "" {
 		inIP = buildTunnelInIP(runtimeState.InNodes, runtimeState.Nodes, ipPreference)
+	}
+	entryNodeIDs := make([]int64, 0, len(runtimeState.InNodes))
+	for _, inNode := range runtimeState.InNodes {
+		if inNode.NodeID > 0 {
+			entryNodeIDs = append(entryNodeIDs, inNode.NodeID)
+		}
+	}
+	if err := h.validateNftablesTunnelStateTx(tx, entryNodeIDs); err != nil {
+		response.WriteJSON(w, response.ErrDefault(err.Error()))
+		return
 	}
 
 	if len(runtimeState.InNodes) > 0 {
@@ -934,6 +1094,16 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	runtimeState.TunnelID = id
 	runtimeState.IPPreference = ipPreference
+	entryNodeIDs := make([]int64, 0, len(runtimeState.InNodes))
+	for _, inNode := range runtimeState.InNodes {
+		if inNode.NodeID > 0 {
+			entryNodeIDs = append(entryNodeIDs, inNode.NodeID)
+		}
+	}
+	if err := h.validateNftablesTunnelState(entryNodeIDs); err != nil {
+		response.WriteJSON(w, response.ErrDefault(err.Error()))
+		return
+	}
 
 	inIp := buildTunnelInIP(runtimeState.InNodes, runtimeState.Nodes, ipPreference)
 
@@ -1700,6 +1870,24 @@ func (h *Handler) tunnelBatchRedeploy(w http.ResponseWriter, r *http.Request) {
 			failures = appendBatchFailure(failures, tunnelID, tunnelName, tunnelErr)
 			continue
 		}
+		if nftMode, entryNodeIDs, modeErr := h.tunnelUsesNftables(tunnelID); modeErr != nil {
+			fail++
+			failures = appendBatchFailure(failures, tunnelID, tunnelName, modeErr)
+			continue
+		} else if nftMode {
+			if len(entryNodeIDs) == 0 {
+				fail++
+				failures = appendBatchFailureReason(failures, tunnelID, tunnelName, "nftables 转发缺少入口节点")
+				continue
+			}
+			if reconcileErr := h.reconcileNftablesNodeByRequest(entryNodeIDs[0]); reconcileErr != nil {
+				fail++
+				failures = appendBatchFailure(failures, tunnelID, tunnelName, reconcileErr)
+				continue
+			}
+			success++
+			continue
+		}
 		if err := h.redeployTunnelAndForwards(tunnelID); err != nil {
 			fail++
 			failures = appendBatchFailure(failures, tunnelID, tunnelName, err)
@@ -1909,6 +2097,17 @@ func (h *Handler) forwardCreate(w http.ResponseWriter, r *http.Request) {
 		port = 10000
 	}
 	entryNodes, _ := h.tunnelEntryNodeIDs(tunnelID)
+	isNftTunnel, _, err := h.tunnelUsesNftables(tunnelID)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if isNftTunnel {
+		if err := h.validateNftablesForwardRequest(tunnel, remoteAddr, entryNodes); err != nil {
+			response.WriteJSON(w, response.ErrDefault(err.Error()))
+			return
+		}
+	}
 	inIp := strings.TrimSpace(asString(req["inIp"]))
 	if inIp != "" && len(entryNodes) > 1 {
 		response.WriteJSON(w, response.ErrDefault("多入口隧道的转发不支持自定义监听IP"))
@@ -2015,6 +2214,17 @@ func (h *Handler) forwardUpdate(w http.ResponseWriter, r *http.Request) {
 	remoteAddr := strings.TrimSpace(asString(req["remoteAddr"]))
 	if remoteAddr == "" {
 		remoteAddr = forward.RemoteAddr
+	}
+	isNftTunnel, entryNodes, err := h.tunnelUsesNftables(tunnelID)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if isNftTunnel {
+		if err := h.validateNftablesForwardRequest(tunnel, remoteAddr, entryNodes); err != nil {
+			response.WriteJSON(w, response.ErrDefault(err.Error()))
+			return
+		}
 	}
 	if actorRole != 0 && !h.allowLocalRemoteAddr() {
 		if err := IsSafeRemoteAddr(remoteAddr); err != nil {
@@ -2206,6 +2416,15 @@ func (h *Handler) forwardDelete(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.ErrDefault(err.Error()))
 		return
 	}
+	if nftMode, entryNodeIDs, modeErr := h.tunnelUsesNftables(forward.TunnelID); modeErr != nil {
+		response.WriteJSON(w, response.Err(-2, modeErr.Error()))
+		return
+	} else if nftMode && len(entryNodeIDs) > 0 {
+		if err := h.reconcileNftablesNodeByRequest(entryNodeIDs[0]); err != nil {
+			response.WriteJSON(w, response.ErrDefault(err.Error()))
+			return
+		}
+	}
 	if err := h.deleteForwardByID(id); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
@@ -2218,7 +2437,7 @@ func (h *Handler) forwardForceDelete(w http.ResponseWriter, r *http.Request) {
 	if id <= 0 {
 		return
 	}
-	_, _, _, err := h.resolveForwardAccess(r, id)
+	forward, _, _, err := h.resolveForwardAccess(r, id)
 	if err != nil {
 		if errors.Is(err, errForwardNotFound) {
 			response.WriteJSON(w, response.ErrDefault("转发不存在"))
@@ -2233,6 +2452,13 @@ func (h *Handler) forwardForceDelete(w http.ResponseWriter, r *http.Request) {
 	if err := h.deleteForwardByID(id); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
+	}
+	_ = h.repo.DeleteNftRuleBindingsByForward(id)
+	if nftMode, entryNodeIDs, modeErr := h.tunnelUsesNftables(forward.TunnelID); modeErr == nil && nftMode && len(entryNodeIDs) > 0 {
+		if err := h.reconcileNftablesNodeByRequest(entryNodeIDs[0]); err != nil {
+			response.WriteJSON(w, response.ErrDefault(err.Error()))
+			return
+		}
 	}
 	response.WriteJSON(w, response.OKEmpty())
 }
@@ -2460,6 +2686,24 @@ func (h *Handler) forwardBatchRedeploy(w http.ResponseWriter, r *http.Request) {
 		if accessErr != nil {
 			f++
 			failures = appendBatchFailure(failures, id, "", accessErr)
+			continue
+		}
+		if nftMode, entryNodeIDs, modeErr := h.tunnelUsesNftables(forward.TunnelID); modeErr != nil {
+			f++
+			failures = appendBatchFailure(failures, id, forward.Name, modeErr)
+			continue
+		} else if nftMode {
+			if len(entryNodeIDs) == 0 {
+				f++
+				failures = appendBatchFailureReason(failures, id, forward.Name, "nftables 转发缺少入口节点")
+				continue
+			}
+			if err := h.reconcileNftablesNodeByRequest(entryNodeIDs[0]); err != nil {
+				f++
+				failures = appendBatchFailure(failures, id, forward.Name, err)
+			} else {
+				s++
+			}
 			continue
 		}
 		if err := h.syncForwardServices(forward, "UpdateService", true); err != nil {
@@ -4705,6 +4949,13 @@ func asMapSlice(v interface{}) []map[string]interface{} {
 	return out
 }
 
+func asMap(v interface{}) map[string]interface{} {
+	if m, ok := v.(map[string]interface{}); ok && m != nil {
+		return m
+	}
+	return map[string]interface{}{}
+}
+
 func asString(v interface{}) string {
 	switch t := v.(type) {
 	case nil:
@@ -4840,6 +5091,15 @@ func normalizeNodeRenewalCycle(v string) string {
 		return strings.ToLower(strings.TrimSpace(v))
 	default:
 		return ""
+	}
+}
+
+func defaultNodeForwardMode(mode string) string {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "nftables":
+		return "nftables"
+	default:
+		return "agent"
 	}
 }
 

@@ -240,6 +240,19 @@ func (h *Handler) syncForwardServicesWithWarnings(forward *forwardRecord, method
 	if err != nil {
 		return nil, err
 	}
+	nftMode, entryNodeIDs, err := h.tunnelUsesNftables(forward.TunnelID)
+	if err != nil {
+		return nil, err
+	}
+	if nftMode {
+		if err := h.validateNftablesForwardRequest(tunnel, forward.RemoteAddr, entryNodeIDs); err != nil {
+			return nil, err
+		}
+		if len(entryNodeIDs) == 0 {
+			return nil, errors.New("nftables 转发缺少入口节点")
+		}
+		return nil, h.syncNftablesNode(entryNodeIDs[0])
+	}
 	ports, err := h.listForwardPorts(forward.ID)
 	if err != nil {
 		return nil, err
