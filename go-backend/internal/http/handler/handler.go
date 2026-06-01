@@ -23,6 +23,7 @@ import (
 	"go-backend/internal/license"
 	"go-backend/internal/metrics"
 	"go-backend/internal/monitoring"
+	runtimenft "go-backend/internal/runtime/nftables"
 	"go-backend/internal/security"
 	"go-backend/internal/store/repo"
 	"go-backend/internal/ws"
@@ -31,11 +32,12 @@ import (
 )
 
 type Handler struct {
-	repo        *repo.Repository
-	jwtSecret   string
-	wsServer    *ws.Server
-	metrics     *metrics.IngestionService
-	healthCheck *health.Checker
+	repo            *repo.Repository
+	jwtSecret       string
+	wsServer        *ws.Server
+	metrics         *metrics.IngestionService
+	healthCheck     *health.Checker
+	nftablesManager nftablesRuntimeManager
 
 	captchaMu     sync.Mutex
 	captchaTokens map[string]int64
@@ -108,6 +110,7 @@ func New(repo *repo.Repository, jwtSecret string) *Handler {
 		wsServer:                 ws.NewServer(repo, jwtSecret),
 		metrics:                  metrics.NewIngestionService(repo),
 		healthCheck:              nil,
+		nftablesManager:          runtimenft.NewManager(nil),
 		captchaTokens:            make(map[string]int64),
 		pendingUpgradeRedeploy:   make(map[int64]struct{}),
 		nodeOnlineRedeployAt:     make(map[int64]time.Time),
@@ -190,6 +193,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/node/batch-upgrade", h.nodeBatchUpgrade)
 	mux.HandleFunc("/api/v1/node/rollback", h.nodeRollback)
 	mux.HandleFunc("/api/v1/node/releases", h.listReleases)
+	mux.HandleFunc("/api/v1/node/nftables/test", h.nodeNftablesTest)
+	mux.HandleFunc("/api/v1/node/nftables/reconcile", h.nodeNftablesReconcile)
+	mux.HandleFunc("/api/v1/node/nftables/clear", h.nodeNftablesClear)
 	mux.HandleFunc("/api/v1/tunnel/list", h.tunnelList)
 	mux.HandleFunc("/api/v1/tunnel/create", h.tunnelCreate)
 	mux.HandleFunc("/api/v1/tunnel/get", h.tunnelGet)

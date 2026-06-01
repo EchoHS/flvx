@@ -2,6 +2,8 @@ export interface NodeApiItem {
   id: number;
   name: string;
   status: number;
+  forwardMode?: "agent" | "nftables";
+  sshConfig?: NodeSshConfigApiItem | null;
   inx?: number;
   remark?: string;
   expiryTime?: number;
@@ -44,6 +46,7 @@ export interface TunnelApiItem {
   name: string;
   type: number;
   status: number;
+  forwardMode?: "agent" | "nftables";
   flow?: number;
   trafficRatio?: number;
   inIp?: string;
@@ -63,6 +66,7 @@ export interface ForwardApiItem {
   id: number;
   name: string;
   status: number;
+  forwardMode?: "agent" | "nftables";
   tunnelName?: string;
   tunnelTrafficRatio?: number;
   inIp?: string;
@@ -303,6 +307,8 @@ export interface NodeMutationPayload {
   id?: number | null;
   name?: string;
   status?: number;
+  forwardMode?: "agent" | "nftables";
+  sshConfig?: NodeSshConfigMutationPayload | null;
   inx?: number;
   remark?: string;
   expiryTime?: number;
@@ -320,6 +326,29 @@ export interface NodeMutationPayload {
   socks?: number;
 }
 
+export interface NodeSshConfigApiItem {
+  host?: string;
+  port?: number;
+  username?: string;
+  authType?: "password" | "private_key";
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  sudoMode?: "none" | "sudo" | "sudo_su";
+  [key: string]: unknown;
+}
+
+export interface NodeSshConfigMutationPayload {
+  host?: string;
+  port?: number;
+  username?: string;
+  authType?: "password" | "private_key";
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  sudoMode?: "none" | "sudo" | "sudo_su";
+}
+
 export interface TunnelChainNodePayload {
   nodeId: number;
   protocol?: string;
@@ -334,6 +363,7 @@ export interface TunnelMutationPayload {
   name?: string;
   type?: number;
   status?: number;
+  forwardMode?: "agent" | "nftables";
   flow?: number;
   trafficRatio?: number;
   inIp?: string;
@@ -381,6 +411,7 @@ export interface ForwardMutationPayload {
   id?: number;
   name?: string;
   status?: number;
+  forwardMode?: "agent" | "nftables";
   tunnelId?: number | null;
   inIp?: string;
   inPort?: number | null;

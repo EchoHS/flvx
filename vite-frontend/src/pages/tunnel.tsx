@@ -122,6 +122,7 @@ interface Tunnel {
   inx?: number;
   name: string;
   type: number; // 1: 端口转发, 2: 隧道转发
+  forwardMode?: "agent" | "nftables";
   inNodeId: ChainTunnel[]; // 入口节点列表
   outNodeId?: ChainTunnel[]; // 出口节点列表
   chainNodes?: ChainTunnel[][]; // 转发链节点列表，二维数组
@@ -150,6 +151,7 @@ interface Node {
   id: number;
   name: string;
   status: number; // 1: 在线, 0: 离线
+  forwardMode?: "agent" | "nftables";
   serverIp?: string;
   serverIpV4?: string;
   serverIpV6?: string;
@@ -160,6 +162,7 @@ interface TunnelForm {
   id?: number;
   name: string;
   type: number;
+  forwardMode?: "agent" | "nftables";
   inNodeId: ChainTunnel[];
   outNodeId?: ChainTunnel[];
   chainNodes?: ChainTunnel[][]; // 转发链节点列表，二维数组，外层是跳数，内层是该跳的节点
@@ -171,6 +174,23 @@ interface TunnelForm {
   probeTargetPort?: number;
   status: number;
 }
+
+type TunnelForwardMode = NonNullable<TunnelForm["forwardMode"]>;
+
+const getTunnelForwardMode = (
+  inNodeId: ChainTunnel[],
+  nodes: Node[],
+): TunnelForwardMode =>
+  inNodeId.some((item) => {
+    const node = nodes.find((candidate) => candidate.id === item.nodeId);
+
+    return node?.forwardMode === "nftables";
+  })
+    ? "nftables"
+    : "agent";
+
+const createTypedTunnelFormDefaults = (): TunnelForm =>
+  createTunnelFormDefaults() as TunnelForm;
 
 interface BatchProgressState {
   active: boolean;
@@ -416,7 +436,7 @@ export default function TunnelPage() {
   };
 
   // 表单状态
-  const [form, setForm] = useState<TunnelForm>(createTunnelFormDefaults());
+  const [form, setForm] = useState<TunnelForm>(createTypedTunnelFormDefaults());
 
   // 表单验证错误
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
@@ -564,7 +584,14 @@ export default function TunnelPage() {
 
   // 表单验证
   const validateForm = (): boolean => {
-    const newErrors = validateTunnelForm(form, nodes, isEdit);
+    const newErrors = validateTunnelForm(
+      {
+        ...form,
+        forwardMode: getTunnelForwardMode(form.inNodeId, nodes),
+      },
+      nodes,
+      isEdit,
+    );
 
     setErrors(newErrors);
 
@@ -574,7 +601,7 @@ export default function TunnelPage() {
   // 新增隧道
   const handleAdd = () => {
     setIsEdit(false);
-    setForm(createTunnelFormDefaults());
+    setForm(createTypedTunnelFormDefaults());
     setErrors({});
     setModalOpen(true);
   };
@@ -588,6 +615,7 @@ export default function TunnelPage() {
       id: tunnel.id,
       name: tunnel.name,
       type: tunnel.type,
+      forwardMode: tunnel.forwardMode === "nftables" ? "nftables" : "agent",
       inNodeId: tunnel.inNodeId || [],
       outNodeId: tunnel.outNodeId || [],
       chainNodes: tunnel.chainNodes || [],
@@ -885,6 +913,7 @@ export default function TunnelPage() {
 
       const data = {
         ...form,
+        forwardMode: getTunnelForwardMode(form.inNodeId, nodes),
         inIp: inIpString,
         outNodeId: cleanedOutNodeId,
         chainNodes: cleanedChainNodes,

@@ -189,7 +189,6 @@ func Open(path string) (*Repository, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("prepare sqlite legacy schema: %w", err)
 	}
-
 	if err := autoMigrateAll(db); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("auto migrate: %w", err)
@@ -269,12 +268,20 @@ func (r *Repository) Close() error {
 }
 
 func autoMigrateAll(db *gorm.DB) error {
+	if db.Dialector.Name() == "sqlite" {
+		if err := prepareSQLiteNftablesColumns(db); err != nil {
+			return err
+		}
+	}
+
 	models := []interface{}{
 		&model.User{},
 		&model.UserQuota{},
 		&model.Forward{},
 		&model.ForwardPort{},
 		&model.Node{},
+		&model.NodeSSHConfig{},
+		&model.NftRuleBinding{},
 		&model.SpeedLimit{},
 		&model.StatisticsFlow{},
 		&model.Tunnel{},
@@ -415,6 +422,21 @@ func prepareSQLiteLegacyColumns(db *gorm.DB) error {
 		}
 	}
 
+	return nil
+}
+
+func prepareSQLiteNftablesColumns(db *gorm.DB) error {
+	if db == nil || db.Dialector.Name() != "sqlite" {
+		return nil
+	}
+	if !db.Migrator().HasTable(&model.Node{}) {
+		return nil
+	}
+	if !db.Migrator().HasColumn(&model.Node{}, "forward_mode") {
+		if err := db.Exec("ALTER TABLE node ADD COLUMN forward_mode varchar(20) NOT NULL DEFAULT 'agent'").Error; err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -793,6 +815,28 @@ func (r *Repository) ListNodes() ([]map[string]interface{}, error) {
 	if err := r.db.Order("inx ASC, id ASC").Find(&nodes).Error; err != nil {
 		return nil, err
 	}
+	nodeIDs := make([]int64, 0, len(nodes))
+	for _, n := range nodes {
+		if defaultNodeForwardMode(n.ForwardMode) == "nftables" {
+			nodeIDs = append(nodeIDs, n.ID)
+		}
+	}
+	sshConfigByNodeID := make(map[int64]map[string]interface{}, len(nodeIDs))
+	if len(nodeIDs) > 0 {
+		var configs []model.NodeSSHConfig
+		if err := r.db.Where("node_id IN ?", nodeIDs).Find(&configs).Error; err != nil {
+			return nil, err
+		}
+		for _, cfg := range configs {
+			sshConfigByNodeID[cfg.NodeID] = map[string]interface{}{
+				"host":     cfg.Host,
+				"port":     cfg.Port,
+				"username": cfg.Username,
+				"authType": cfg.AuthType,
+				"sudoMode": cfg.SudoMode,
+			}
+		}
+	}
 	items := make([]map[string]interface{}, 0, len(nodes))
 	for _, n := range nodes {
 		items = append(items, map[string]interface{}{
@@ -810,11 +854,13 @@ func (r *Repository) ListNodes() ([]map[string]interface{}, error) {
 			"version":       nullableString(n.Version),
 			"http":          n.HTTP, "tls": n.TLS, "socks": n.Socks,
 			"status": n.Status, "isRemote": n.IsRemote,
+			"forwardMode":             defaultNodeForwardMode(n.ForwardMode),
 			"remoteUrl":               nullableString(n.RemoteURL),
 			"remoteToken":             nullableString(n.RemoteToken),
 			"remoteConfig":            nullableString(n.RemoteConfig),
 			"expiryReminderDismissed": n.ExpiryReminderDismissed,
 			"interfaceName":           nullableString(n.InterfaceName),
+			"sshConfig":               sshConfigByNodeID[n.ID],
 		})
 	}
 	return items, nil

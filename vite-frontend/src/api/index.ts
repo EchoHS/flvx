@@ -129,6 +129,12 @@ export const getNodeReleases = (channel: ReleaseChannel = "stable") =>
   Network.post<NodeReleaseApiItem[]>("/node/releases", { channel });
 export const rollbackNode = (id: number) =>
   Network.post("/node/rollback", { id });
+export const testNodeNftables = (nodeId: number) =>
+  Network.post("/node/nftables/test", { nodeId });
+export const reconcileNodeNftables = (nodeId: number) =>
+  Network.post("/node/nftables/reconcile", { nodeId });
+export const clearNodeNftables = (nodeId: number) =>
+  Network.post("/node/nftables/clear", { nodeId });
 
 // 隧道CRUD操作 - 全部使用POST请求
 export const createTunnel = (data: TunnelMutationPayload) =>
