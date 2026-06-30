@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go-backend/internal/http/client"
+	runtimenft "go-backend/internal/runtime/nftables"
 	"go-backend/internal/store/model"
 	"go-backend/internal/ws"
 )
@@ -772,6 +773,9 @@ func (h *Handler) diagnoseForwardRuntime(ctx context.Context, forward *forwardRe
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if payload, handled, err := h.diagnoseNftablesForwardRuntime(forward); handled || err != nil {
+		return payload, err
+	}
 	forwardName, workItems, err := h.prepareForwardDiagnosis(forward)
 	if err != nil {
 		return nil, err
@@ -785,6 +789,111 @@ func (h *Handler) diagnoseForwardRuntime(ctx context.Context, forward *forwardRe
 		"results":     results,
 	}
 	return payload, nil
+}
+
+func (h *Handler) diagnoseNftablesForwardRuntime(forward *forwardRecord) (map[string]interface{}, bool, error) {
+	if forward == nil {
+		return nil, false, errForwardNotFound
+	}
+	nftMode, entryNodeIDs, err := h.tunnelUsesNftables(forward.TunnelID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !nftMode {
+		return nil, false, nil
+	}
+	if len(entryNodeIDs) == 0 {
+		return nil, true, errors.New("nftables 转发缺少入口节点")
+	}
+	targets, err := resolveDiagnosisTargets(forward.RemoteAddr)
+	if err != nil {
+		return nil, true, err
+	}
+	results, err := h.buildNftablesForwardDiagnosisResults(forward, entryNodeIDs[0], targets)
+	if err != nil {
+		return nil, true, err
+	}
+	payload := map[string]interface{}{
+		"forwardName": forward.Name,
+		"timestamp":   time.Now().UnixMilli(),
+		"results":     results,
+	}
+	return payload, true, nil
+}
+
+func (h *Handler) buildNftablesForwardDiagnosisResults(forward *forwardRecord, nodeID int64, targets []diagnosisTarget) ([]map[string]interface{}, error) {
+	if h == nil || h.repo == nil {
+		return nil, errors.New("handler not initialized")
+	}
+	node, err := h.getNodeRecord(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	bindings, err := h.repo.ListNftRuleBindingsByNode(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	var binding *model.NftRuleBinding
+	for i := range bindings {
+		if bindings[i].ForwardID == forward.ID {
+			binding = &bindings[i]
+			break
+		}
+	}
+	target := diagnosisTarget{}
+	if len(targets) > 0 {
+		target = targets[0]
+	}
+
+	status := "missing"
+	message := "nftables 规则未下发"
+	success := false
+	inPort := 0
+	protocols := ""
+	targetAddr := strings.TrimSpace(forward.RemoteAddr)
+	ruleHash := ""
+	if binding != nil {
+		status = strings.ToLower(strings.TrimSpace(binding.Status))
+		inPort = binding.InPort
+		protocols = strings.TrimSpace(binding.Protocols)
+		targetAddr = strings.TrimSpace(binding.TargetAddr)
+		ruleHash = strings.TrimSpace(binding.RuleHash)
+		if status == "" {
+			status = "pending"
+		}
+		if status == runtimenft.StatusApplied {
+			success = true
+			message = "nftables 规则已下发"
+		} else if strings.TrimSpace(binding.LastError) != "" {
+			message = binding.LastError
+		} else {
+			message = "nftables 规则未完成下发"
+		}
+	}
+
+	packetLoss := 100
+	if success {
+		packetLoss = 0
+	}
+	result := map[string]interface{}{
+		"success":       success,
+		"nodeName":      node.Name,
+		"nodeId":        strconv.FormatInt(nodeID, 10),
+		"targetIp":      target.IP,
+		"targetPort":    target.Port,
+		"description":   fmt.Sprintf("nftables规则(%s)->目标(%s)", node.Name, defaultString(target.Address, targetAddr)),
+		"averageTime":   0,
+		"packetLoss":    packetLoss,
+		"message":       message,
+		"fromChainType": 1,
+		"forwardMode":   "nftables",
+		"nftRuleStatus": status,
+		"nftRuleHash":   ruleHash,
+		"inPort":        inPort,
+		"protocols":     protocols,
+		"targetAddr":    targetAddr,
+	}
+	return []map[string]interface{}{result}, nil
 }
 
 func (h *Handler) prepareForwardDiagnosis(forward *forwardRecord) (string, []diagnosisWorkItem, error) {
