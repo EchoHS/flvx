@@ -2,10 +2,13 @@ package handler
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"go-backend/internal/license"
 )
+
+var nftablesTrafficCollectInterval = 30 * time.Second
 
 func (h *Handler) StartBackgroundJobs() {
 	if h == nil || h.repo == nil {
@@ -131,7 +134,19 @@ func (h *Handler) runTunnelQualityProber(ctx context.Context) {
 
 func (h *Handler) runNftablesTrafficCollectLoop(ctx context.Context) {
 	defer h.jobsWG.Done()
-	ticker := time.NewTicker(time.Minute)
+	h.runNftablesStartupReconcile(ctx)
+	select {
+	case <-ctx.Done():
+		return
+	default:
+		h.runNftablesTrafficCollectJob(time.Now())
+	}
+
+	interval := nftablesTrafficCollectInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -140,6 +155,27 @@ func (h *Handler) runNftablesTrafficCollectLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			h.runNftablesTrafficCollectJob(time.Now())
+		}
+	}
+}
+
+func (h *Handler) runNftablesStartupReconcile(ctx context.Context) {
+	if h == nil || h.repo == nil {
+		return
+	}
+	nodes, err := h.repo.ListNftablesNodesForCollection()
+	if err != nil {
+		log.Printf("nftables startup reconcile failed op=list_nodes err=%v", err)
+		return
+	}
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if err := h.syncNftablesNode(node.NodeID); err != nil {
+			log.Printf("nftables startup reconcile failed node_id=%d err=%v", node.NodeID, err)
 		}
 	}
 }
