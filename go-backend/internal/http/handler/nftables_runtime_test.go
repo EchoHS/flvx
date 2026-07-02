@@ -345,6 +345,41 @@ func TestNodeUpdatePreservesExistingNftablesSecretsWhenFieldsOmitted(t *testing.
 	}
 }
 
+func TestNodeUpdateSkipsAgentProtocolCommandForNftablesNode(t *testing.T) {
+	fixture := setupNftablesHandler(t)
+	seedNftablesSSHConfig(t, fixture.handler, fixture.nodeID)
+
+	req := newAuthenticatedJSONRequest(t, map[string]interface{}{
+		"id":          fixture.nodeID,
+		"name":        "nft-node-updated",
+		"serverIp":    "198.51.100.10",
+		"serverIpV4":  "198.51.100.10",
+		"port":        "1000-65535",
+		"forwardMode": "nftables",
+		"http":        1,
+		"tls":         1,
+		"socks":       1,
+		"sshConfig": map[string]interface{}{
+			"host":     "203.0.113.30",
+			"port":     22,
+			"username": "admin",
+			"authType": "password",
+			"sudoMode": "none",
+		},
+	})
+	res := httptest.NewRecorder()
+	fixture.handler.nodeUpdate(res, req)
+	assertNftablesSuccessWithBody(t, res)
+
+	cfg, err := fixture.handler.repo.GetNodeSSHConfig(fixture.nodeID)
+	if err != nil {
+		t.Fatalf("load ssh config: %v", err)
+	}
+	if !cfg.Password.Valid || cfg.Password.String != "secret" {
+		t.Fatalf("expected password secret to be preserved, got %+v", cfg)
+	}
+}
+
 func TestValidateNftablesForwardRequestRejectsHostnameTarget(t *testing.T) {
 	fixture := setupNftablesHandler(t)
 	h := fixture.handler
