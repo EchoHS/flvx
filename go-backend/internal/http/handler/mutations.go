@@ -417,6 +417,12 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 	newHTTP := asInt(req["http"], currentHTTP)
 	newTLS := asInt(req["tls"], currentTLS)
 	newSocks := asInt(req["socks"], currentSocks)
+	forwardMode := defaultNodeForwardMode(strings.TrimSpace(asString(req["forwardMode"])))
+	currentForwardMode, err := h.repo.GetNodeForwardMode(id)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
 	serverIP := asString(req["serverIp"])
 	if serverIP != "" {
 		if err := IsValidNodeAddress(serverIP); err != nil {
@@ -424,7 +430,8 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if currentStatus == 1 && (newHTTP != currentHTTP || newTLS != currentTLS || newSocks != currentSocks) {
+	usesNftablesRuntime := forwardMode == "nftables" || defaultNodeForwardMode(currentForwardMode) == "nftables"
+	if currentStatus == 1 && !usesNftablesRuntime && (newHTTP != currentHTTP || newTLS != currentTLS || newSocks != currentSocks) {
 		if err := h.applyNodeProtocolChange(id, newHTTP, newTLS, newSocks); err != nil {
 			response.WriteJSON(w, response.ErrDefault(err.Error()))
 			return
@@ -432,7 +439,6 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UnixMilli()
-	forwardMode := defaultNodeForwardMode(strings.TrimSpace(asString(req["forwardMode"])))
 	if err := h.repo.UpdateNode(id,
 		asString(req["name"]),
 		serverIP,
