@@ -49,6 +49,7 @@ type BackupData = model.BackupData
 type UserBackup = model.UserBackup
 type NodeBackup = model.NodeBackup
 type TunnelBackup = model.TunnelBackup
+type TunnelMaskConfig = model.TunnelMaskConfig
 type ChainTunnelBackup = model.ChainTunnelBackup
 type ForwardBackup = model.ForwardBackup
 type ForwardPortBackup = model.ForwardPortBackup
@@ -297,6 +298,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&model.SpeedLimit{},
 		&model.StatisticsFlow{},
 		&model.Tunnel{},
+		&model.TunnelMaskConfig{},
 		&model.ChainTunnel{},
 		&model.UserTunnel{},
 		&model.TunnelGroup{},
@@ -1217,7 +1219,7 @@ func (r *Repository) ListTunnels() ([]map[string]interface{}, error) {
 	for _, t := range tunnels {
 		tunnelMap[t.ID] = map[string]interface{}{
 			"id": t.ID, "inx": t.Inx, "name": t.Name,
-			"type": t.Type, "flow": t.Flow, "trafficRatio": t.TrafficRatio,
+			"type": t.Type, "protocol": t.Protocol, "flow": t.Flow, "trafficRatio": t.TrafficRatio,
 			"status": t.Status, "createdTime": t.CreatedTime,
 			"inIp":            nullableString(t.InIP),
 			"ipPreference":    t.IPPreference,
@@ -1243,6 +1245,33 @@ func (r *Repository) ListTunnels() ([]map[string]interface{}, error) {
 	var chains []model.ChainTunnel
 	if err := r.db.Order("tunnel_id ASC, chain_type ASC, inx ASC, id ASC").Find(&chains).Error; err != nil {
 		return nil, err
+	}
+
+	var masks []model.TunnelMaskConfig
+	if err := r.db.Find(&masks).Error; err == nil {
+		for _, m := range masks {
+			t := tunnelMap[m.TunnelID]
+			if t == nil {
+				continue
+			}
+			mask := map[string]interface{}{
+				"enabled":               m.Enabled,
+				"domain":                m.Domain,
+				"wsPath":                m.WSPath,
+				"siteRepo":              m.SiteRepo,
+				"siteDir":               m.SiteDir,
+				"acmeEmail":             m.ACMEEmail,
+				"innerPort":             m.InnerPort,
+				"cloudflareEnabled":     m.CloudflareEnabled,
+				"cloudflareZoneId":      nullableString(m.CloudflareZoneID),
+				"cloudflareRecordName":  nullableString(m.CloudflareRecordName),
+				"cloudflareApiTokenSet": m.CloudflareAPIToken.Valid && strings.TrimSpace(m.CloudflareAPIToken.String) != "",
+				"status":                m.Status,
+				"lastError":             m.LastError,
+			}
+			t["maskConfig"] = mask
+			t["maskSite"] = mask
+		}
 	}
 
 	chainBucket := map[int64]map[int][]map[string]interface{}{}
@@ -1275,6 +1304,9 @@ func (r *Repository) ListTunnels() ([]map[string]interface{}, error) {
 		}
 		if c.ConnectIP.Valid {
 			nodeObj["connectIp"] = c.ConnectIP.String
+		}
+		if c.Port.Valid && c.Port.Int64 > 0 {
+			nodeObj["port"] = c.Port.Int64
 		}
 
 		switch chainTypeInt {
@@ -2092,7 +2124,8 @@ func (r *Repository) exportNodes() ([]model.NodeBackup, error) {
 		b := model.NodeBackup{
 			ID: n.ID, Name: n.Name, Secret: n.Secret, ServerIP: n.ServerIP,
 			Remark: n.Remark.String, RenewalCycle: n.RenewalCycle.String,
-			Port: n.Port, HTTP: n.HTTP, TLS: n.TLS, Socks: n.Socks,
+			Port: n.Port,
+			HTTP: n.HTTP, TLS: n.TLS, Socks: n.Socks,
 			CreatedTime: n.CreatedTime, Status: n.Status,
 			TCPListenAddr: n.TCPListenAddr, UDPListenAddr: n.UDPListenAddr,
 			Inx: n.Inx, IsRemote: n.IsRemote,
@@ -2151,6 +2184,22 @@ func (r *Repository) exportTunnels() ([]model.TunnelBackup, error) {
 			return nil, err
 		}
 		b.ChainTunnels = chains
+		if mask, err := r.GetTunnelMaskConfig(t.ID); err == nil && mask != nil {
+			b.MaskConfig = &model.TunnelMaskBackup{
+				Enabled:              mask.Enabled,
+				Domain:               mask.Domain,
+				WSPath:               mask.WSPath,
+				SiteRepo:             mask.SiteRepo,
+				SiteDir:              mask.SiteDir,
+				ACMEEmail:            mask.ACMEEmail,
+				InnerPort:            mask.InnerPort,
+				CloudflareEnabled:    mask.CloudflareEnabled,
+				CloudflareZoneID:     mask.CloudflareZoneID.String,
+				CloudflareRecordName: mask.CloudflareRecordName.String,
+				Status:               mask.Status,
+				LastError:            mask.LastError,
+			}
+		}
 		out = append(out, b)
 	}
 	return out, nil
@@ -2614,6 +2663,34 @@ func importTunnels(tx *gorm.DB, tunnels []model.TunnelBackup, now int64) (int, e
 				return count, err
 			}
 		}
+		if t.MaskConfig != nil && t.MaskConfig.Enabled == 1 {
+			mask := model.TunnelMaskConfig{
+				TunnelID:             t.ID,
+				Enabled:              t.MaskConfig.Enabled,
+				Domain:               t.MaskConfig.Domain,
+				WSPath:               t.MaskConfig.WSPath,
+				SiteRepo:             t.MaskConfig.SiteRepo,
+				SiteDir:              t.MaskConfig.SiteDir,
+				ACMEEmail:            t.MaskConfig.ACMEEmail,
+				InnerPort:            t.MaskConfig.InnerPort,
+				CloudflareEnabled:    t.MaskConfig.CloudflareEnabled,
+				CloudflareZoneID:     sql.NullString{String: t.MaskConfig.CloudflareZoneID, Valid: t.MaskConfig.CloudflareZoneID != ""},
+				CloudflareRecordName: sql.NullString{String: t.MaskConfig.CloudflareRecordName, Valid: t.MaskConfig.CloudflareRecordName != ""},
+				Status:               t.MaskConfig.Status,
+				LastError:            t.MaskConfig.LastError,
+				CreatedTime:          now,
+				UpdatedTime:          now,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "tunnel_id"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"enabled", "domain", "ws_path", "site_repo", "site_dir", "acme_email", "inner_port",
+					"cloudflare_enabled", "cloudflare_zone_id", "cloudflare_record_name", "status", "last_error", "updated_time",
+				}),
+			}).Create(&mask).Error; err != nil {
+				return count, err
+			}
+		}
 		count++
 	}
 	return count, nil
@@ -2986,7 +3063,7 @@ func (r *Repository) GetUserTunnelByID(id int64) (*model.UserTunnel, error) {
 
 // ─── Migration ───────────────────────────────────────────────────────
 
-const currentSchemaVersion = 6
+const currentSchemaVersion = 7
 
 var ensurePostgresIDDefaultsFn = ensurePostgresIDDefaults
 var migrateViteConfigValueColumnTypeFn = migrateViteConfigValueColumnType

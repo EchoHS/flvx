@@ -2,7 +2,6 @@ package mtls
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"net"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"github.com/go-gost/core/logger"
 	md "github.com/go-gost/core/metadata"
 	"github.com/go-gost/x/internal/util/mux"
+	utls_util "github.com/go-gost/x/internal/util/utls"
 	"github.com/go-gost/x/registry"
 )
 
@@ -123,8 +123,8 @@ func (d *mtlsDialer) Handshake(ctx context.Context, conn net.Conn, options ...di
 }
 
 func (d *mtlsDialer) initSession(ctx context.Context, conn net.Conn) (*muxSession, error) {
-	tlsConn := tls.Client(conn, d.options.TLSConfig)
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	tlsConn, err := utls_util.Client(ctx, conn, d.options.TLSConfig, d.md.fingerprint)
+	if err != nil {
 		return nil, err
 	}
 	conn = tlsConn

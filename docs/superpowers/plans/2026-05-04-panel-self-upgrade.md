@@ -750,7 +750,7 @@ Change both `docker-compose-v4.yml` and `docker-compose-v6.yml` backend services
 
 ```yaml
   backend:
-    image: ghcr.io/sagit-chu/flux-panel-backend:${FLUX_VERSION:-latest}
+    image: ghcr.io/echohs/flux-panel-backend:${FLUX_VERSION:-latest}
     container_name: flux-panel-backend
     restart: unless-stopped
     environment:

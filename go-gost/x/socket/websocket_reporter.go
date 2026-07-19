@@ -776,13 +776,7 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 
 // routeCommand 路由命令到对应的处理函数
 func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
-	jsonBytes, errs := json.Marshal(cmd)
-	if errs != nil {
-		fmt.Println("Error marshaling JSON:", errs)
-		return
-	}
-
-	fmt.Println("🔔 收到命令: ", string(jsonBytes))
+	fmt.Printf("🔔 收到命令: type=%s requestId=%s\n", cmd.Type, cmd.RequestId)
 	var err error
 	var response CommandResponse
 
@@ -864,6 +858,13 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	case "SetProtocol":
 		err = w.handleSetProtocol(cmd.Data)
 		response.Type = "SetProtocolResponse"
+
+	case "ConfigureMaskSite":
+		err = w.handleConfigureMaskSite(cmd.Data)
+		response.Type = "ConfigureMaskSiteResponse"
+	case "RemoveMaskSite":
+		err = w.handleRemoveMaskSite(cmd.Data)
+		response.Type = "RemoveMaskSiteResponse"
 
 	// 升级 Agent 命令（异步执行，不需要保存配置）
 	case "UpgradeAgent":

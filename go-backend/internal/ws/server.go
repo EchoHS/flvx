@@ -81,14 +81,14 @@ type CommandResult struct {
 }
 
 type Server struct {
-	repo         *repo.Repository
-	jwtSecret    string
-	upgrader     websocket.Upgrader
-	onNodeOnline func(nodeID int64)
-	onNodeMetric func(nodeID int64, info SystemInfo)
+	repo             *repo.Repository
+	jwtSecret        string
+	upgrader         websocket.Upgrader
+	onNodeOnline     func(nodeID int64)
+	onNodeMetric     func(nodeID int64, info SystemInfo)
 	getUserAuthState func(userID int64) (*auth.UserAuthState, error)
 
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	admins   map[*adminSession]struct{}
 	monitors map[*monitorSession]struct{}
 	nodes    map[int64]*nodeSession

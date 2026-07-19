@@ -2,13 +2,13 @@ package tls
 
 import (
 	"context"
-	"crypto/tls"
 	"net"
 	"time"
 
 	"github.com/go-gost/core/dialer"
 	"github.com/go-gost/core/logger"
 	md "github.com/go-gost/core/metadata"
+	utls_util "github.com/go-gost/x/internal/util/utls"
 	"github.com/go-gost/x/registry"
 )
 
@@ -58,8 +58,8 @@ func (d *tlsDialer) Handshake(ctx context.Context, conn net.Conn, options ...dia
 		defer conn.SetDeadline(time.Time{})
 	}
 
-	tlsConn := tls.Client(conn, d.options.TLSConfig)
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	tlsConn, err := utls_util.Client(ctx, conn, d.options.TLSConfig, d.md.fingerprint)
+	if err != nil {
 		conn.Close()
 		return nil, err
 	}

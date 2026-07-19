@@ -190,6 +190,28 @@ type Tunnel struct {
 
 func (Tunnel) TableName() string { return "tunnel" }
 
+type TunnelMaskConfig struct {
+	ID                   int64          `gorm:"primaryKey;autoIncrement"`
+	TunnelID             int64          `gorm:"column:tunnel_id;not null;uniqueIndex"`
+	Enabled              int            `gorm:"not null;default:0"`
+	Domain               string         `gorm:"type:varchar(255);not null;default:''"`
+	WSPath               string         `gorm:"column:ws_path;type:varchar(255);not null;default:'/ws'"`
+	SiteRepo             string         `gorm:"column:site_repo;type:text;not null;default:'https://github.com/EchoHS/anime.js.git'"`
+	SiteDir              string         `gorm:"column:site_dir;type:text;not null;default:'/var/www/flvx-mask-site'"`
+	ACMEEmail            string         `gorm:"column:acme_email;type:varchar(255);not null;default:''"`
+	InnerPort            int            `gorm:"column:inner_port;not null;default:24443"`
+	CloudflareEnabled    int            `gorm:"column:cloudflare_enabled;not null;default:0"`
+	CloudflareAPIToken   sql.NullString `gorm:"column:cloudflare_api_token;type:text"`
+	CloudflareZoneID     sql.NullString `gorm:"column:cloudflare_zone_id;type:varchar(255)"`
+	CloudflareRecordName sql.NullString `gorm:"column:cloudflare_record_name;type:varchar(255)"`
+	Status               string         `gorm:"type:varchar(32);not null;default:'pending'"`
+	LastError            string         `gorm:"column:last_error;type:text;not null;default:''"`
+	CreatedTime          int64          `gorm:"column:created_time;not null"`
+	UpdatedTime          int64          `gorm:"column:updated_time;not null"`
+}
+
+func (TunnelMaskConfig) TableName() string { return "tunnel_mask_config" }
+
 type UserQuota struct {
 	UserID           int64  `gorm:"column:user_id;primaryKey"`
 	DailyLimitGB     int64  `gorm:"column:daily_limit_gb;not null;default:0"`
@@ -473,6 +495,22 @@ type TunnelBackup struct {
 	ProbeTargetHost string              `json:"probeTargetHost,omitempty"`
 	ProbeTargetPort int                 `json:"probeTargetPort,omitempty"`
 	ChainTunnels    []ChainTunnelBackup `json:"chainTunnels,omitempty"`
+	MaskConfig      *TunnelMaskBackup   `json:"maskConfig,omitempty"`
+}
+
+type TunnelMaskBackup struct {
+	Enabled              int    `json:"enabled"`
+	Domain               string `json:"domain,omitempty"`
+	WSPath               string `json:"wsPath,omitempty"`
+	SiteRepo             string `json:"siteRepo,omitempty"`
+	SiteDir              string `json:"siteDir,omitempty"`
+	ACMEEmail            string `json:"acmeEmail,omitempty"`
+	InnerPort            int    `json:"innerPort,omitempty"`
+	CloudflareEnabled    int    `json:"cloudflareEnabled,omitempty"`
+	CloudflareZoneID     string `json:"cloudflareZoneId,omitempty"`
+	CloudflareRecordName string `json:"cloudflareRecordName,omitempty"`
+	Status               string `json:"status,omitempty"`
+	LastError            string `json:"lastError,omitempty"`
 }
 
 type ChainTunnelBackup struct {

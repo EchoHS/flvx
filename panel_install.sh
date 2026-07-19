@@ -8,7 +8,7 @@ export LC_ALL=C
 
 
 # GitHub repo used for release downloads
-REPO="Sagit-chu/flux-panel"
+REPO="EchoHS/flvx"
 
 # 固定版本号（Release 构建时自动填充，留空则获取最新版）
 PINNED_VERSION=""
@@ -158,6 +158,49 @@ check_docker() {
     exit 1
   fi
   echo "检测到 Docker 命令：$DOCKER_CMD"
+}
+
+download_compose_file() {
+  local url="$1"
+  local target="${2:-docker-compose.yml}"
+  local tmp_file="${target}.tmp"
+
+  rm -f "$tmp_file"
+  if ! curl -fL --retry 3 --connect-timeout 15 -o "$tmp_file" "$url"; then
+    rm -f "$tmp_file"
+    echo "❌ Compose 配置下载失败: $url"
+    echo "   请确认 EchoHS/flvx 已发布对应版本的 Release 资源。"
+    return 1
+  fi
+  if ! grep -q '^services:' "$tmp_file"; then
+    rm -f "$tmp_file"
+    echo "❌ 下载内容不是有效的 Docker Compose 配置。"
+    return 1
+  fi
+  mv "$tmp_file" "$target"
+}
+
+validate_compose_config() {
+  if ! $DOCKER_CMD config >/dev/null; then
+    echo "❌ Docker Compose 配置校验失败，请检查 docker-compose.yml 和 .env。"
+    return 1
+  fi
+}
+
+pull_panel_images() {
+  local services=(backend frontend)
+  if [[ "${1:-sqlite}" == "postgres" ]]; then
+    services+=(postgres)
+  fi
+
+  echo "⬇️ 拉取面板镜像..."
+  if ! $DOCKER_CMD pull "${services[@]}"; then
+    echo "❌ 面板镜像拉取失败。"
+    echo "   请确认当前版本已完成 GitHub Actions 发布，并将以下 GHCR Packages 设为 Public："
+    echo "   ghcr.io/echohs/flux-panel-backend"
+    echo "   ghcr.io/echohs/vite-frontend"
+    return 1
+  fi
 }
 
 # 检测系统是否支持 IPv6
@@ -441,7 +484,7 @@ install_panel() {
   echo "🔽 下载必要文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
   echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-  curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
+  download_compose_file "$DOCKER_COMPOSE_URL"
   echo "✅ 文件准备完成"
 
   # 自动检测并配置 IPv6 支持
@@ -463,6 +506,9 @@ POSTGRES_DB=$POSTGRES_DB
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 EOF
+
+  validate_compose_config
+  pull_panel_images "$DB_TYPE"
 
   echo "🚀 启动 docker 服务..."
   if [[ "$DB_TYPE" == "postgres" ]]; then
@@ -507,14 +553,19 @@ update_panel() {
   echo "🔽 下载最新配置文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
   echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-  curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
+  download_compose_file "$DOCKER_COMPOSE_URL"
   echo "✅ 下载完成"
+
+  validate_compose_config
 
   # 自动检测并配置 IPv6 支持
   if check_ipv6_support; then
     echo "🚀 系统支持 IPv6，自动启用 IPv6 配置..."
     configure_docker_ipv6
   fi
+
+  # 先拉取新镜像。拉取失败时保留当前运行中的旧容器，避免无谓停机。
+  pull_panel_images "$CURRENT_DB_TYPE"
 
   # 先发送 SIGTERM 信号，让应用优雅关闭
   docker stop -t 30 flux-panel-backend 2>/dev/null || true
@@ -526,13 +577,6 @@ update_panel() {
   
   # 然后再完全停止
   $DOCKER_CMD down
-
-  echo "⬇️ 拉取最新镜像..."
-  if [[ "$CURRENT_DB_TYPE" == "postgres" ]]; then
-    $DOCKER_CMD pull backend frontend postgres
-  else
-    $DOCKER_CMD pull backend frontend
-  fi
 
   echo "🚀 启动更新后的服务..."
   if [[ "$CURRENT_DB_TYPE" == "postgres" ]]; then
@@ -572,7 +616,7 @@ migrate_to_postgres() {
     ensure_compose_urls_initialized || return 1
     DOCKER_COMPOSE_URL=$(get_docker_compose_url)
     echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-    curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
+    download_compose_file "$DOCKER_COMPOSE_URL"
     echo "✅ docker-compose.yml 下载完成"
   fi
 
@@ -649,7 +693,7 @@ uninstall_panel() {
     ensure_compose_urls_initialized || return 1
     DOCKER_COMPOSE_URL=$(get_docker_compose_url)
     echo "📡 选择配置文件：$(basename "$DOCKER_COMPOSE_URL")"
-    curl -L -o docker-compose.yml "$DOCKER_COMPOSE_URL"
+    download_compose_file "$DOCKER_COMPOSE_URL"
     echo "✅ docker-compose.yml 下载完成"
   fi
 

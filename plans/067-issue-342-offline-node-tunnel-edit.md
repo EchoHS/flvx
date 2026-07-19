@@ -1,6 +1,6 @@
 # 067 - Issue #342: Allow Tunnel Edit with Offline Nodes
 
-**Issue:** https://github.com/Sagit-chu/flvx/issues/342
+**Issue:** https://github.com/EchoHS/flvx/issues/342
 
 ## Problem
 When a node goes offline, users cannot edit tunnel configurations at all — including removing the faulty offline node. This creates a deadlock where users must wait for the offline node to recover or manually edit the database.

@@ -23,24 +23,38 @@
 #### 快速部署（安装最新版）
 面板端：
 ```bash
-curl -L https://raw.githubusercontent.com/Sagit-chu/flux-panel/main/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
+curl -L https://raw.githubusercontent.com/EchoHS/flvx/main/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
 ```
 节点端：
 ```bash
-curl -L https://raw.githubusercontent.com/Sagit-chu/flux-panel/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -L https://raw.githubusercontent.com/EchoHS/flvx/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
 #### 安装特定版本
-从 [Releases](https://github.com/Sagit-chu/flux-panel/releases) 页面复制对应版本的安装命令，脚本会自动安装该版本而非最新版。
+从 [Releases](https://github.com/EchoHS/flvx/releases) 页面复制对应版本的安装命令，脚本会自动安装该版本而非最新版。
 
 面板端（以 2.1.9-beta6 为例）：
 ```bash
-curl -L https://github.com/Sagit-chu/flux-panel/releases/download/2.1.9-beta6/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
+curl -L https://github.com/EchoHS/flvx/releases/download/2.1.9-beta6/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
 ```
 节点端（以 2.1.9-beta6 为例）：
 ```bash
-curl -L https://github.com/Sagit-chu/flux-panel/releases/download/2.1.9-beta6/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -L https://github.com/EchoHS/flvx/releases/download/2.1.9-beta6/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
+
+#### 发布 Fork 镜像
+
+`panel_install.sh` 使用 GitHub Container Registry，不需要注册 Docker Hub。推送版本 Tag 后，GitHub Actions 会自动构建 amd64/arm64 的 backend、frontend 镜像，并创建带安装脚本和 Compose 配置的 Release：
+
+```bash
+git push origin main
+git tag 2.2.0
+git push origin 2.2.0
+```
+
+首次发布后，在 GitHub 的 Packages 页面将 `flux-panel-backend` 和 `vite-frontend` 两个 Package 的可见性设为 **Public**。完成后即可在服务器使用上面的 `panel_install.sh` 命令匿名拉取并部署，无需执行 `docker login`。
+
+发布工作流位于 `.github/workflows/docker-build.yml`。仓库 Actions 权限需要允许读取源码、写入 Packages 和创建 Release。安装脚本会在启动前校验 Compose 并主动拉取镜像；若 Release 资源不存在或 GHCR Package 不可匿名访问，会给出明确错误。
 
 #### PostgreSQL 部署（Docker Compose）
 
@@ -125,7 +139,7 @@ docker compose up -d
 ---
 ## Original Project
 - **Name**: flux-panel
-- **Source**: https://github.com/bqlpfy/flux-panel
+- **Source**: https://github.com/EchoHS/flvx
 - **License**: Apache License 2.0
 
 ## Modifications

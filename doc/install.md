@@ -15,8 +15,10 @@
 使用以下命令即可快速安装面板：
 
 ```bash
-curl -L https://raw.githubusercontent.com/Sagit-chu/flux-panel/main/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
+curl -L https://raw.githubusercontent.com/EchoHS/flvx/main/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
 ```
+
+脚本会从 `EchoHS/flvx` 的最新 Release 下载 Compose 配置，并拉取 `ghcr.io/echohs/flux-panel-backend` 与 `ghcr.io/echohs/vite-frontend`。两个 GHCR Package 必须设为 Public，服务器无需执行 `docker login`。
 
 **安装过程中会提示输入以下信息：**
 - **前端端口**: 默认为 `6366`
@@ -61,7 +63,7 @@ curl -L https://raw.githubusercontent.com/Sagit-chu/flux-panel/main/panel_instal
 在节点服务器上运行：
 
 ```bash
-curl -L https://raw.githubusercontent.com/Sagit-chu/flux-panel/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -L https://raw.githubusercontent.com/EchoHS/flvx/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
 **安装过程中会提示输入：**

@@ -91,11 +91,27 @@ import {
 
 interface ChainTunnel {
   nodeId: number;
+  port?: number;
   protocol?: string; // 'tls' | 'wss' | 'tcp' | 'mtls' | 'mwss' | 'mtcp' | 'kcp' - 转发链协议
   strategy?: string; // 'fifo' | 'round' | 'rand' | 'best' - 仅转发链/多出口需要
   chainType?: number; // 1: 入口, 2: 转发链, 3: 出口
   inx?: number; // 转发链序号
   connectIp?: string; // 连接IP（多IP节点指定连接地址）
+}
+
+interface TunnelMaskConfig {
+  enabled: number;
+  domain: string;
+  wsPath: string;
+  siteRepo: string;
+  siteDir?: string;
+  acmeEmail: string;
+  innerPort: number;
+  cloudflareEnabled?: number;
+  cloudflareApiToken?: string;
+  cloudflareApiTokenSet?: boolean;
+  cloudflareZoneId?: string;
+  cloudflareRecordName?: string;
 }
 
 interface BestExitStateItem {
@@ -135,12 +151,36 @@ interface Tunnel {
   probeTargetHost?: string;
   probeTargetPort?: number;
   bestExitState?: BestExitState;
+  maskConfig?: TunnelMaskConfig;
+  maskSite?: TunnelMaskConfig;
   status: number;
   createdTime: string;
 }
 
 const DEFAULT_PROBE_TARGET_HOST = "www.bing.com";
 const DEFAULT_PROBE_TARGET_PORT = 443;
+const DEFAULT_MASK_SITE_REPO = "https://github.com/EchoHS/anime.js.git";
+const DEFAULT_MASK_WS_PATH = "/ws";
+const DEFAULT_MASK_INNER_PORT = 24443;
+
+const createDefaultMaskConfig = (): TunnelMaskConfig => ({
+  enabled: 0,
+  domain: "",
+  wsPath: DEFAULT_MASK_WS_PATH,
+  siteRepo: DEFAULT_MASK_SITE_REPO,
+  acmeEmail: "",
+  innerPort: DEFAULT_MASK_INNER_PORT,
+  cloudflareEnabled: 0,
+  cloudflareApiToken: "",
+  cloudflareZoneId: "",
+  cloudflareRecordName: "",
+});
+
+const supportsMaskSite = (protocol?: string) =>
+  protocol === "wss" || protocol === "mwss";
+
+const recommends443 = (protocol?: string) =>
+  protocol === "tls" || protocol === "mtls";
 
 const getTunnelDiagnosisTarget = (tunnel: Tunnel) => ({
   targetIp: tunnel.probeTargetHost || DEFAULT_PROBE_TARGET_HOST,
@@ -172,6 +212,7 @@ interface TunnelForm {
   ipPreference: string;
   probeTargetHost?: string;
   probeTargetPort?: number;
+  maskConfig?: TunnelMaskConfig;
   status: number;
 }
 
@@ -189,8 +230,10 @@ const getTunnelForwardMode = (
     ? "nftables"
     : "agent";
 
-const createTypedTunnelFormDefaults = (): TunnelForm =>
-  createTunnelFormDefaults() as TunnelForm;
+const createTypedTunnelFormDefaults = (): TunnelForm => ({
+  ...(createTunnelFormDefaults() as TunnelForm),
+  maskConfig: createDefaultMaskConfig(),
+});
 
 interface BatchProgressState {
   active: boolean;
@@ -332,6 +375,7 @@ const mapTunnelApiItems = (items: any[]): Tunnel[] => {
     return {
       ...tunnelFields,
       ...(bestExitState ? { bestExitState } : {}),
+      maskConfig: tunnel.maskConfig || tunnel.maskSite,
       inx: tunnel.inx ?? 0,
       inNodeId: Array.isArray(tunnel.inNodeId) ? tunnel.inNodeId : [],
       outNodeId: Array.isArray(tunnel.outNodeId) ? tunnel.outNodeId : [],
@@ -630,6 +674,11 @@ export default function TunnelPage() {
       ipPreference: tunnel.ipPreference || "",
       probeTargetHost: tunnel.probeTargetHost || "",
       probeTargetPort: tunnel.probeTargetPort || 0,
+      maskConfig: {
+        ...createDefaultMaskConfig(),
+        ...(tunnel.maskConfig || tunnel.maskSite || {}),
+        cloudflareApiToken: "",
+      },
       status: tunnel.status,
     });
     setErrors({});
@@ -910,6 +959,14 @@ export default function TunnelPage() {
       const probeTargetPort = probeTargetHost
         ? Number(form.probeTargetPort || 0)
         : 0;
+      const cloudflareApiToken =
+        form.maskConfig?.cloudflareApiToken?.trim() || "";
+      const maskConfig: TunnelMaskConfig | undefined = form.maskConfig
+        ? { ...form.maskConfig, cloudflareApiToken: undefined }
+        : undefined;
+      if (maskConfig && cloudflareApiToken) {
+        maskConfig.cloudflareApiToken = cloudflareApiToken;
+      }
 
       const data = {
         ...form,
@@ -919,6 +976,7 @@ export default function TunnelPage() {
         chainNodes: cleanedChainNodes,
         probeTargetHost,
         probeTargetPort,
+        maskConfig,
       };
 
       const response = isEdit
@@ -2810,6 +2868,7 @@ export default function TunnelPage() {
                                         currentOutNodes[0]?.protocol || "tls";
                                       const strategy =
                                         currentOutNodes[0]?.strategy || "round";
+                                      const port = currentOutNodes[0]?.port;
                                       const realNodes = currentOutNodes.filter(
                                         (ct) => ct.nodeId !== -1,
                                       );
@@ -2824,6 +2883,7 @@ export default function TunnelPage() {
                                             chainType: 3,
                                             protocol,
                                             strategy,
+                                            ...(port ? { port } : {}),
                                           }),
                                         ),
                                       };
@@ -2927,6 +2987,12 @@ export default function TunnelPage() {
                                               chainType: 3,
                                               protocol: selectedKey,
                                               strategy: currentStrategy,
+                                              ...(currentOutNodes[0]?.port
+                                                ? {
+                                                    port: currentOutNodes[0]
+                                                      .port,
+                                                  }
+                                                : {}),
                                             },
                                           ],
                                         };
@@ -2954,6 +3020,61 @@ export default function TunnelPage() {
                                 <SelectItem key="mtcp">MTCP</SelectItem>
                                 <SelectItem key="kcp">KCP</SelectItem>
                               </Select>
+
+                              <Input
+                                classNames={{
+                                  input: "font-mono",
+                                  label: "text-xs",
+                                }}
+                                description={
+                                  recommends443(form.outNodeId?.[0]?.protocol)
+                                    ? "建议使用 443；留空自动随机分配"
+                                    : "留空自动随机分配"
+                                }
+                                label="连接端口"
+                                placeholder={
+                                  recommends443(form.outNodeId?.[0]?.protocol)
+                                    ? "443"
+                                    : "例如: 8443"
+                                }
+                                type="number"
+                                value={
+                                  form.outNodeId?.[0]?.port
+                                    ? String(form.outNodeId[0].port)
+                                    : ""
+                                }
+                                variant="bordered"
+                                onChange={(e) => {
+                                  const port = Number(e.target.value || 0);
+
+                                  setForm((prev) => {
+                                    const currentOutNodes =
+                                      prev.outNodeId || [];
+                                    if (currentOutNodes.length === 0) {
+                                      return {
+                                        ...prev,
+                                        outNodeId: [
+                                          {
+                                            nodeId: -1,
+                                            chainType: 3,
+                                            protocol: "tls",
+                                            strategy: "round",
+                                            ...(port > 0 ? { port } : {}),
+                                          },
+                                        ],
+                                      };
+                                    }
+
+                                    return {
+                                      ...prev,
+                                      outNodeId: currentOutNodes.map((ct) => ({
+                                        ...ct,
+                                        port: port > 0 ? port : undefined,
+                                      })),
+                                    };
+                                  });
+                                }}
+                              />
 
                               {/* 负载策略 - 25% */}
                               <Select
@@ -3000,6 +3121,12 @@ export default function TunnelPage() {
                                               chainType: 3,
                                               protocol: currentProtocol,
                                               strategy: selectedKey,
+                                              ...(currentOutNodes[0]?.port
+                                                ? {
+                                                    port: currentOutNodes[0]
+                                                      .port,
+                                                  }
+                                                : {}),
                                             },
                                           ],
                                         };
@@ -3102,6 +3229,226 @@ export default function TunnelPage() {
                                 <SelectItem key={ip}>{ip}</SelectItem>
                               ))}
                             </Select>
+
+                            {supportsMaskSite(
+                              form.outNodeId?.[0]?.protocol,
+                            ) && (
+                              <div className="grid grid-cols-1 gap-3 rounded-lg border border-default-200 bg-default-50/40 p-3 md:grid-cols-2">
+                                <Checkbox
+                                  className="md:col-span-2"
+                                  isSelected={form.maskConfig?.enabled === 1}
+                                  onValueChange={(checked) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      maskConfig: {
+                                        ...(prev.maskConfig ||
+                                          createDefaultMaskConfig()),
+                                        enabled: checked ? 1 : 0,
+                                      },
+                                    }))
+                                  }
+                                >
+                                  端口复用伪装站
+                                </Checkbox>
+                                <Alert
+                                  className="md:col-span-2"
+                                  color="primary"
+                                  description="可复用绝大多数 TCP 端口，推荐 443、8443、9443、10443；浏览器会屏蔽部分危险端口，非 443 访问时需使用 https://域名:端口。80 端口必须使用 Cloudflare DNS-01。Cloudflare API 仅用于 DNS 解析和证书签发，不启用 CDN 代理。"
+                                  variant="flat"
+                                />
+                                <Input
+                                  label="伪装域名"
+                                  placeholder="www.example.com"
+                                  value={form.maskConfig?.domain || ""}
+                                  variant="bordered"
+                                  onChange={(e) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      maskConfig: {
+                                        ...(prev.maskConfig ||
+                                          createDefaultMaskConfig()),
+                                        domain: e.target.value,
+                                      },
+                                    }))
+                                  }
+                                />
+                                <Input
+                                  classNames={{ input: "font-mono" }}
+                                  label="WebSocket 路径"
+                                  placeholder="/ws"
+                                  value={
+                                    form.maskConfig?.wsPath ||
+                                    DEFAULT_MASK_WS_PATH
+                                  }
+                                  variant="bordered"
+                                  onChange={(e) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      maskConfig: {
+                                        ...(prev.maskConfig ||
+                                          createDefaultMaskConfig()),
+                                        wsPath: e.target.value,
+                                      },
+                                    }))
+                                  }
+                                />
+                                <Input
+                                  label="ACME 邮箱"
+                                  placeholder="admin@example.com"
+                                  value={form.maskConfig?.acmeEmail || ""}
+                                  variant="bordered"
+                                  onChange={(e) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      maskConfig: {
+                                        ...(prev.maskConfig ||
+                                          createDefaultMaskConfig()),
+                                        acmeEmail: e.target.value,
+                                      },
+                                    }))
+                                  }
+                                />
+                                <Input
+                                  classNames={{ input: "font-mono" }}
+                                  label="本地 gost 端口"
+                                  placeholder="24443"
+                                  type="number"
+                                  value={String(
+                                    form.maskConfig?.innerPort ||
+                                      DEFAULT_MASK_INNER_PORT,
+                                  )}
+                                  variant="bordered"
+                                  onChange={(e) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      maskConfig: {
+                                        ...(prev.maskConfig ||
+                                          createDefaultMaskConfig()),
+                                        innerPort: Number(
+                                          e.target.value ||
+                                            DEFAULT_MASK_INNER_PORT,
+                                        ),
+                                      },
+                                    }))
+                                  }
+                                />
+                                <Input
+                                  className="md:col-span-2"
+                                  label="伪装站 Git 仓库"
+                                  value={
+                                    form.maskConfig?.siteRepo ||
+                                    DEFAULT_MASK_SITE_REPO
+                                  }
+                                  variant="bordered"
+                                  onChange={(e) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      maskConfig: {
+                                        ...(prev.maskConfig ||
+                                          createDefaultMaskConfig()),
+                                        siteRepo: e.target.value,
+                                      },
+                                    }))
+                                  }
+                                />
+                                <Checkbox
+                                  className="md:col-span-2"
+                                  isSelected={
+                                    form.maskConfig?.cloudflareEnabled === 1
+                                  }
+                                  onValueChange={(checked) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      maskConfig: {
+                                        ...(prev.maskConfig ||
+                                          createDefaultMaskConfig()),
+                                        cloudflareEnabled: checked ? 1 : 0,
+                                      },
+                                    }))
+                                  }
+                                >
+                                  使用 Cloudflare API 自动解析并签发证书
+                                </Checkbox>
+                                {form.maskConfig?.cloudflareEnabled === 1 && (
+                                  <>
+                                    <Input
+                                      className="md:col-span-2"
+                                      label="Cloudflare API Token"
+                                      placeholder={
+                                        form.maskConfig?.cloudflareApiTokenSet
+                                          ? "已保存，留空保持不变"
+                                          : "需要 Zone DNS Edit 权限"
+                                      }
+                                      type="password"
+                                      value={
+                                        form.maskConfig?.cloudflareApiToken ||
+                                        ""
+                                      }
+                                      variant="bordered"
+                                      onChange={(e) =>
+                                        setForm((prev) => ({
+                                          ...prev,
+                                          maskConfig: {
+                                            ...(prev.maskConfig ||
+                                              createDefaultMaskConfig()),
+                                            cloudflareApiToken: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                    <Input
+                                      label="Zone ID"
+                                      placeholder="可留空自动查找"
+                                      value={
+                                        form.maskConfig?.cloudflareZoneId || ""
+                                      }
+                                      variant="bordered"
+                                      onChange={(e) =>
+                                        setForm((prev) => ({
+                                          ...prev,
+                                          maskConfig: {
+                                            ...(prev.maskConfig ||
+                                              createDefaultMaskConfig()),
+                                            cloudflareZoneId: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                    <Input
+                                      label="DNS 记录名"
+                                      placeholder="默认使用伪装域名"
+                                      value={
+                                        form.maskConfig?.cloudflareRecordName ||
+                                        ""
+                                      }
+                                      variant="bordered"
+                                      onChange={(e) =>
+                                        setForm((prev) => ({
+                                          ...prev,
+                                          maskConfig: {
+                                            ...(prev.maskConfig ||
+                                              createDefaultMaskConfig()),
+                                            cloudflareRecordName:
+                                              e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </>
+                                )}
+                              </div>
+                            )}
+                            {recommends443(form.outNodeId?.[0]?.protocol) &&
+                              !supportsMaskSite(
+                                form.outNodeId?.[0]?.protocol,
+                              ) && (
+                                <Alert
+                                  className="mt-3"
+                                  color="warning"
+                                  description="TLS/MTLS 当前只支持普通 TLS 隧道；网页端口复用仅支持 WSS/MWSS。"
+                                  variant="flat"
+                                />
+                              )}
                           </>
                         );
                       })()}

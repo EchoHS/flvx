@@ -56,6 +56,8 @@ export interface TunnelApiItem {
   inNodeId?: TunnelChainNodePayload[];
   outNodeId?: TunnelChainNodePayload[];
   chainNodes?: TunnelChainNodePayload[][];
+  maskConfig?: TunnelMaskConfigPayload;
+  maskSite?: TunnelMaskConfigPayload;
   entryNodeId: number;
   exitNodeId: number;
   inx?: number;
@@ -351,11 +353,27 @@ export interface NodeSshConfigMutationPayload {
 
 export interface TunnelChainNodePayload {
   nodeId: number;
+  port?: number;
   protocol?: string;
   strategy?: string;
   connectIp?: string;
   chainType?: number;
   inx?: number;
+}
+
+export interface TunnelMaskConfigPayload {
+  enabled?: number;
+  domain?: string;
+  wsPath?: string;
+  siteRepo?: string;
+  siteDir?: string;
+  acmeEmail?: string;
+  innerPort?: number;
+  cloudflareEnabled?: number;
+  cloudflareApiToken?: string;
+  cloudflareApiTokenSet?: boolean;
+  cloudflareZoneId?: string;
+  cloudflareRecordName?: string;
 }
 
 export interface TunnelMutationPayload {
@@ -373,6 +391,7 @@ export interface TunnelMutationPayload {
   inNodeId?: TunnelChainNodePayload[];
   outNodeId?: TunnelChainNodePayload[];
   chainNodes?: TunnelChainNodePayload[][];
+  maskConfig?: TunnelMaskConfigPayload;
 }
 
 export interface UserQuotaResetPayload {

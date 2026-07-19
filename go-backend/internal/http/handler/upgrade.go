@@ -21,7 +21,7 @@ type failedForward struct {
 }
 
 const (
-	githubRepo     = "Sagit-chu/flvx"
+	githubRepo     = "EchoHS/flvx"
 	githubAPIBase  = "https://api.github.com"
 	githubHTMLBase = "https://github.com"
 	upgradeTimeout = 5 * time.Minute

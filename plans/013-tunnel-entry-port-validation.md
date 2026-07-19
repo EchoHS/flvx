@@ -1,7 +1,7 @@
 # 013 - 隧道入口端口校验不严格修复
 
 ## Issue
-- GitHub Issue: [#373](https://github.com/Sagit-chu/flvx/issues/373)
+- GitHub Issue: [#373](https://github.com/EchoHS/flvx/issues/373)
 
 ## 修复方案
 

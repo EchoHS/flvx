@@ -28,6 +28,7 @@ require (
 	github.com/prometheus/client_golang v1.19.1
 	github.com/quic-go/quic-go v0.59.0
 	github.com/quic-go/webtransport-go v0.10.0
+	github.com/refraction-networking/utls v1.8.2
 	github.com/rs/xid v1.3.0
 	github.com/shadowsocks/go-shadowsocks2 v0.1.5
 	github.com/shadowsocks/shadowsocks-go v0.0.0-20200409064450-3e585ff90601
@@ -59,6 +60,7 @@ require (
 require (
 	github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da // indirect
 	github.com/alessio/shellescape v1.4.1 // indirect
+	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
@@ -84,6 +86,7 @@ require (
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/jonboulle/clockwork v0.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
 	github.com/klauspost/reedsolomon v1.11.8 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect

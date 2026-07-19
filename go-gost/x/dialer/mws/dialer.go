@@ -2,6 +2,7 @@ package mws
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-gost/core/logger"
 	md "github.com/go-gost/core/metadata"
 	"github.com/go-gost/x/internal/util/mux"
+	utls_util "github.com/go-gost/x/internal/util/utls"
 	ws_util "github.com/go-gost/x/internal/util/ws"
 	"github.com/go-gost/x/registry"
 	"github.com/gorilla/websocket"
@@ -157,7 +159,11 @@ func (d *mwsDialer) initSession(ctx context.Context, host string, conn net.Conn,
 	url := url.URL{Scheme: "ws", Host: host, Path: d.md.path}
 	if d.tlsEnabled {
 		url.Scheme = "wss"
-		dialer.TLSClientConfig = d.options.TLSConfig
+		tlsConfig := mwsTLSConfig(d.options.TLSConfig, host)
+		dialer.TLSClientConfig = tlsConfig
+		dialer.NetDialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return utls_util.Client(ctx, conn, tlsConfig, d.md.fingerprint)
+		}
 	}
 
 	if d.md.handshakeTimeout > 0 {
@@ -193,6 +199,22 @@ func (d *mwsDialer) initSession(ctx context.Context, host string, conn net.Conn,
 		return nil, err
 	}
 	return &muxSession{conn: cc, session: session}, nil
+}
+
+func mwsTLSConfig(cfg *tls.Config, host string) *tls.Config {
+	if cfg == nil {
+		cfg = &tls.Config{}
+	} else {
+		cfg = cfg.Clone()
+	}
+	if cfg.ServerName == "" {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			cfg.ServerName = h
+		} else {
+			cfg.ServerName = host
+		}
+	}
+	return cfg
 }
 
 func (d *mwsDialer) keepAlive(conn ws_util.WebsocketConn) {

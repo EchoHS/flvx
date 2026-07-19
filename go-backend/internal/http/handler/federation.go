@@ -136,13 +136,9 @@ func buildFederationMiddleChainConfig(chainName string, runtimeID int64, protoco
 		"name": chainName,
 		"hops": []map[string]interface{}{
 			{
-				"name": fmt.Sprintf("hop_%d", runtimeID),
-				"selector": map[string]interface{}{
-					"strategy":    runtimeTunnelStrategy(strategy),
-					"maxFails":    1,
-					"failTimeout": int64(600000000000),
-				},
-				"nodes": nodeItems,
+				"name":     fmt.Sprintf("hop_%d", runtimeID),
+				"selector": tunnelSelectorConfig(runtimeTunnelStrategy(strategy)),
+				"nodes":    nodeItems,
 			},
 		},
 	}

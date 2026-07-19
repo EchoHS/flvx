@@ -1,7 +1,7 @@
 # Floating Save Button Design
 
 **Date:** 2026-04-01
-**Issue:** https://github.com/Sagit-chu/flvx/issues/266
+**Issue:** https://github.com/EchoHS/flvx/issues/266
 **Status:** Approved
 
 ## Overview

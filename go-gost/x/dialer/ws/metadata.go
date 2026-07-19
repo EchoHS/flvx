@@ -14,8 +14,9 @@ const (
 )
 
 type metadata struct {
-	host string
-	path string
+	host        string
+	path        string
+	fingerprint string
 
 	handshakeTimeout  time.Duration
 	readHeaderTimeout time.Duration
@@ -29,6 +30,7 @@ type metadata struct {
 
 func (d *wsDialer) parseMetadata(md mdata.Metadata) (err error) {
 	d.md.host = mdutil.GetString(md, "ws.host", "host")
+	d.md.fingerprint = mdutil.GetString(md, "tls.fingerprint", "utls.fingerprint", "fingerprint")
 
 	d.md.path = mdutil.GetString(md, "ws.path", "path")
 	if d.md.path == "" {

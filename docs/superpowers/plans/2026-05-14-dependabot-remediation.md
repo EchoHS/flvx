@@ -47,7 +47,7 @@
 Run:
 
 ```bash
-gh api 'repos/Sagit-chu/flvx/dependabot/alerts?state=open&per_page=100' --paginate \
+gh api 'repos/EchoHS/flvx/dependabot/alerts?state=open&per_page=100' --paginate \
   --jq '.[] | [.number,.security_advisory.severity,.dependency.package.ecosystem,.dependency.manifest_path,.dependency.package.name,.security_vulnerability.vulnerable_version_range,(.security_vulnerability.first_patched_version.identifier // "")] | @tsv'
 ```
 
@@ -508,7 +508,7 @@ Expected: every command exits with code 0.
 Run:
 
 ```bash
-gh api 'repos/Sagit-chu/flvx/dependabot/alerts?state=open&per_page=100' --paginate \
+gh api 'repos/EchoHS/flvx/dependabot/alerts?state=open&per_page=100' --paginate \
   --jq 'group_by(.security_advisory.severity) | map({severity:.[0].security_advisory.severity,count:length})'
 ```
 

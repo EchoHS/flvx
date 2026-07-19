@@ -9,6 +9,7 @@ import (
 
 type metadata struct {
 	handshakeTimeout time.Duration
+	fingerprint      string
 }
 
 func (d *tlsDialer) parseMetadata(md mdata.Metadata) (err error) {
@@ -17,6 +18,7 @@ func (d *tlsDialer) parseMetadata(md mdata.Metadata) (err error) {
 	)
 
 	d.md.handshakeTimeout = mdutil.GetDuration(md, handshakeTimeout)
+	d.md.fingerprint = mdutil.GetString(md, "tls.fingerprint", "utls.fingerprint", "fingerprint")
 
 	return
 }

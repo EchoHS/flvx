@@ -899,6 +899,11 @@ func (h *Handler) tunnelCreate(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}
+	if err := h.saveTunnelMaskConfigTx(tx, tunnelID, runtimeState.MaskConfig, false); err != nil {
+		h.releaseFederationRuntimeRefs(federationReleaseRefs)
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
 	if err := h.repo.ReplaceFederationTunnelBindingsTx(tx, tunnelID, federationBindings); err != nil {
 		h.releaseFederationRuntimeRefs(federationReleaseRefs)
 		response.WriteJSON(w, response.Err(-2, err.Error()))
@@ -943,6 +948,13 @@ func (h *Handler) cleanupTunnelRuntime(tunnelID int64) {
 			_, _ = h.sendNodeCommand(row.NodeID, "DeleteService", map[string]interface{}{"services": serviceNames}, false, true)
 		} else if row.ChainType == 3 {
 			_, _ = h.sendNodeCommand(row.NodeID, "DeleteService", map[string]interface{}{"services": serviceNames}, false, true)
+		}
+	}
+	if cfg, cfgErr := h.repo.GetTunnelMaskConfig(tunnelID); cfgErr == nil && cfg != nil && cfg.Enabled == 1 {
+		for _, row := range chainRows {
+			if row.ChainType == 3 {
+				h.removeTunnelMaskSite(row.NodeID, tunnelID)
+			}
 		}
 	}
 }
@@ -1008,6 +1020,30 @@ func (h *Handler) cleanupObsoleteTunnelRuntime(tunnelID int64, oldRows, newRows 
 	serviceNames := tunnelRuntimeServiceNames(tunnelID)
 	for _, nodeID := range removedTunnelRuntimeNodeIDs(oldRows, newRows, tunnelRuntimeNeedsService) {
 		_, _ = h.sendNodeCommand(nodeID, "DeleteService", map[string]interface{}{"services": serviceNames}, false, true)
+	}
+}
+
+func (h *Handler) cleanupObsoleteTunnelMaskRuntime(tunnelID int64, oldCfg, newCfg *model.TunnelMaskConfig, oldRows, newRows []chainNodeRecord) {
+	if h == nil || tunnelID <= 0 || oldCfg == nil || oldCfg.Enabled != 1 {
+		return
+	}
+	newEnabled := newCfg != nil && newCfg.Enabled == 1
+	newExitNodes := map[int64]struct{}{}
+	if newEnabled {
+		for _, row := range newRows {
+			if row.ChainType == 3 {
+				newExitNodes[row.NodeID] = struct{}{}
+			}
+		}
+	}
+	for _, row := range oldRows {
+		if row.ChainType != 3 {
+			continue
+		}
+		if _, stillExit := newExitNodes[row.NodeID]; newEnabled && stillExit {
+			continue
+		}
+		h.removeTunnelMaskSite(row.NodeID, tunnelID)
 	}
 }
 
@@ -1079,6 +1115,7 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 		probeTargetPort = oldTunnel.ProbeTargetPort
 	}
 	oldChainRows, _ := h.listChainNodesForTunnel(id)
+	oldMaskConfig, _ := h.repo.GetTunnelMaskConfig(id)
 	if oldTunnel != nil && oldTunnel.Type == 2 && typeVal != 2 {
 		h.cleanupTunnelRuntime(id)
 	}
@@ -1158,6 +1195,11 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}
+	if err := h.saveTunnelMaskConfigTx(tx, id, runtimeState.MaskConfig, true); err != nil {
+		h.releaseFederationRuntimeRefs(federationReleaseRefs)
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
 	if err := h.repo.ReplaceFederationTunnelBindingsTx(tx, id, federationBindings); err != nil {
 		h.releaseFederationRuntimeRefs(federationReleaseRefs)
 		response.WriteJSON(w, response.Err(-2, err.Error()))
@@ -1212,6 +1254,7 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		newChainRows, _ := h.listChainNodesForTunnel(id)
 		h.cleanupObsoleteTunnelRuntime(id, oldChainRows, newChainRows)
+		h.cleanupObsoleteTunnelMaskRuntime(id, oldMaskConfig, runtimeState.MaskConfig, oldChainRows, newChainRows)
 	}
 
 	oldType := 0
@@ -3198,6 +3241,7 @@ type tunnelRuntimeNode struct {
 	ChainType int
 	Port      int
 	ConnectIP string
+	Mask      *model.TunnelMaskConfig
 }
 
 type tunnelCreateState struct {
@@ -3209,7 +3253,15 @@ type tunnelCreateState struct {
 	OutNodes     []tunnelRuntimeNode
 	Nodes        map[int64]*nodeRecord
 	NodeIDList   []int64
+	MaskConfig   *model.TunnelMaskConfig
 }
+
+const (
+	defaultMaskSiteRepo  = "https://github.com/EchoHS/anime.js.git"
+	defaultMaskSiteDir   = "/var/www/flvx-mask-site"
+	defaultMaskWSPath    = "/ws"
+	defaultMaskInnerPort = 24443
+)
 
 func (h *Handler) prepareTunnelCreateState(tx *gorm.DB, req map[string]interface{}, tunnelType int, excludeTunnelID int64) (*tunnelCreateState, error) {
 	state := &tunnelCreateState{
@@ -3259,14 +3311,21 @@ func (h *Handler) prepareTunnelCreateState(tx *gorm.DB, req map[string]interface
 				}
 				if !isRemote {
 					var err error
-					if excludeTunnelID > 0 {
-						port, err = h.repo.PickNodePortTx(tx, nodeID, allocated, excludeTunnelID)
-					} else {
-						port, err = h.repo.PickRandomNodePortTx(tx, nodeID, allocated, excludeTunnelID)
-					}
+					port, err = h.repo.PickPreferredNodePortTx(tx, nodeID, 0, allocated, excludeTunnelID, excludeTunnelID == 0)
 					if err != nil {
 						return nil, err
 					}
+				}
+			} else {
+				isRemote, remoteErr := h.repo.IsRemoteNodeTx(tx, nodeID)
+				if remoteErr != nil {
+					return nil, remoteErr
+				}
+				if !isRemote {
+					if err := h.repo.ValidateNodePortAvailableTx(tx, nodeID, port, allocated, excludeTunnelID); err != nil {
+						return nil, err
+					}
+					allocated[nodeID] = port
 				}
 			}
 			state.OutNodes = append(state.OutNodes, tunnelRuntimeNode{
@@ -3298,14 +3357,21 @@ func (h *Handler) prepareTunnelCreateState(tx *gorm.DB, req map[string]interface
 					}
 					if !isRemote {
 						var err error
-						if excludeTunnelID > 0 {
-							port, err = h.repo.PickNodePortTx(tx, nodeID, allocated, excludeTunnelID)
-						} else {
-							port, err = h.repo.PickRandomNodePortTx(tx, nodeID, allocated, excludeTunnelID)
-						}
+						port, err = h.repo.PickPreferredNodePortTx(tx, nodeID, 0, allocated, excludeTunnelID, excludeTunnelID == 0)
 						if err != nil {
 							return nil, err
 						}
+					}
+				} else {
+					isRemote, remoteErr := h.repo.IsRemoteNodeTx(tx, nodeID)
+					if remoteErr != nil {
+						return nil, remoteErr
+					}
+					if !isRemote {
+						if err := h.repo.ValidateNodePortAvailableTx(tx, nodeID, port, allocated, excludeTunnelID); err != nil {
+							return nil, err
+						}
+						allocated[nodeID] = port
 					}
 				}
 				hop = append(hop, tunnelRuntimeNode{
@@ -3381,7 +3447,91 @@ func (h *Handler) prepareTunnelCreateState(tx *gorm.DB, req map[string]interface
 		}
 	}
 
+	maskCfg, err := parseTunnelMaskConfigFromRequest(req, state, tunnelType)
+	if err != nil {
+		return nil, err
+	}
+	state.MaskConfig = maskCfg
+	if maskCfg != nil && maskCfg.Enabled == 1 {
+		for i := range state.OutNodes {
+			state.OutNodes[i].Mask = maskCfg
+		}
+	}
+
 	return state, nil
+}
+
+func parseTunnelMaskConfigFromRequest(req map[string]interface{}, state *tunnelCreateState, tunnelType int) (*model.TunnelMaskConfig, error) {
+	raw, ok := req["maskConfig"]
+	if !ok {
+		raw, ok = req["maskSite"]
+	}
+	if !ok {
+		return nil, nil
+	}
+	m := asMap(raw)
+	enabled := asInt(m["enabled"], 0)
+	if enabled <= 0 {
+		return &model.TunnelMaskConfig{Enabled: 0}, nil
+	}
+	if tunnelType != 2 {
+		return nil, errors.New("伪装站复用仅支持隧道转发模式")
+	}
+	if state == nil || len(state.OutNodes) != 1 {
+		return nil, errors.New("伪装站复用初版仅支持单出口隧道")
+	}
+	protocol := strings.ToLower(strings.TrimSpace(defaultString(state.OutNodes[0].Protocol, "tls")))
+	if protocol != "wss" && protocol != "mwss" {
+		return nil, errors.New("伪装站复用仅支持 wss/mwss 协议")
+	}
+	domain := strings.TrimSpace(asString(m["domain"]))
+	if domain == "" {
+		return nil, errors.New("伪装站域名不能为空")
+	}
+	wsPath := normalizeMaskWSPath(asString(m["wsPath"]))
+	innerPort := asInt(m["innerPort"], defaultMaskInnerPort)
+	if innerPort <= 0 || innerPort > 65535 {
+		return nil, errors.New("伪装站本地端口无效")
+	}
+	publicPort := state.OutNodes[0].Port
+	if innerPort == publicPort {
+		innerPort = defaultMaskInnerPort
+		if innerPort == publicPort {
+			innerPort++
+		}
+	}
+	cfToken := asString(m["cloudflareApiToken"])
+	cfEnabled := asInt(m["cloudflareEnabled"], 0)
+	if cfToken != "" {
+		cfEnabled = 1
+	}
+	return &model.TunnelMaskConfig{
+		Enabled:              1,
+		Domain:               domain,
+		WSPath:               wsPath,
+		SiteRepo:             defaultString(asString(m["siteRepo"]), defaultMaskSiteRepo),
+		SiteDir:              defaultString(asString(m["siteDir"]), defaultMaskSiteDir),
+		ACMEEmail:            asString(m["acmeEmail"]),
+		InnerPort:            innerPort,
+		CloudflareEnabled:    cfEnabled,
+		CloudflareAPIToken:   sql.NullString{String: cfToken, Valid: cfToken != ""},
+		CloudflareZoneID:     sql.NullString{String: asString(m["cloudflareZoneId"]), Valid: asString(m["cloudflareZoneId"]) != ""},
+		CloudflareRecordName: sql.NullString{String: defaultString(asString(m["cloudflareRecordName"]), domain), Valid: true},
+		Status:               "pending",
+		CreatedTime:          time.Now().UnixMilli(),
+		UpdatedTime:          time.Now().UnixMilli(),
+	}, nil
+}
+
+func normalizeMaskWSPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return defaultMaskWSPath
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
 }
 
 func buildTunnelInIP(inNodes []tunnelRuntimeNode, nodes map[int64]*nodeRecord, ipPreference string) string {
@@ -3481,6 +3631,36 @@ func applyTunnelPortsToRequest(req map[string]interface{}, state *tunnelCreateSt
 			}
 		}
 	}
+}
+
+func (h *Handler) saveTunnelMaskConfigTx(tx *gorm.DB, tunnelID int64, cfg *model.TunnelMaskConfig, preserveWhenMissing bool) error {
+	if cfg == nil {
+		if preserveWhenMissing {
+			return nil
+		}
+		return h.repo.DeleteTunnelMaskConfigTx(tx, tunnelID)
+	}
+	if cfg.Enabled <= 0 {
+		return h.repo.DeleteTunnelMaskConfigTx(tx, tunnelID)
+	}
+	now := time.Now().UnixMilli()
+	existing, err := h.repo.GetTunnelMaskConfigTx(tx, tunnelID)
+	if err != nil {
+		return err
+	}
+	cfg.TunnelID = tunnelID
+	cfg.CreatedTime = now
+	if existing != nil && existing.CreatedTime > 0 {
+		cfg.CreatedTime = existing.CreatedTime
+		if !cfg.CloudflareAPIToken.Valid && existing.CloudflareAPIToken.Valid {
+			cfg.CloudflareAPIToken = existing.CloudflareAPIToken
+		}
+	}
+	cfg.UpdatedTime = now
+	if cfg.Status == "" {
+		cfg.Status = "pending"
+	}
+	return h.repo.UpsertTunnelMaskConfigTx(tx, *cfg)
 }
 
 type federationRuntimeReleaseRef struct {
@@ -3840,9 +4020,56 @@ func (h *Handler) applyTunnelRuntimeWithMode(state *tunnelCreateState, upsert bo
 			return createdChains, createdServices, fmt.Errorf("出口节点 %s 下发服务失败: %w", nodeDisplayName(state.Nodes[outNode.NodeID]), err)
 		}
 		createdServices = append(createdServices, outNode.NodeID)
+		if outNode.Mask != nil && outNode.Mask.Enabled == 1 {
+			if err := h.configureTunnelMaskSite(outNode.NodeID, outNode, state.Nodes[outNode.NodeID]); err != nil {
+				return createdChains, createdServices, fmt.Errorf("出口节点 %s 部署伪装站失败: %w", nodeDisplayName(state.Nodes[outNode.NodeID]), err)
+			}
+		}
 	}
 
 	return createdChains, createdServices, nil
+}
+
+func (h *Handler) configureTunnelMaskSite(nodeID int64, outNode tunnelRuntimeNode, node *nodeRecord) error {
+	if h == nil || outNode.Mask == nil || outNode.Mask.Enabled != 1 {
+		return nil
+	}
+	publicIP := ""
+	if node != nil {
+		publicIP = pickNodeAddressV4(node)
+		if strings.TrimSpace(publicIP) == "" {
+			publicIP = strings.TrimSpace(node.ServerIP)
+		}
+	}
+	payload := map[string]interface{}{
+		"tunnelId":             outNode.Mask.TunnelID,
+		"domain":               outNode.Mask.Domain,
+		"wsPath":               normalizeMaskWSPath(outNode.Mask.WSPath),
+		"siteRepo":             defaultString(outNode.Mask.SiteRepo, defaultMaskSiteRepo),
+		"siteDir":              defaultString(outNode.Mask.SiteDir, defaultMaskSiteDir),
+		"acmeEmail":            outNode.Mask.ACMEEmail,
+		"innerPort":            outNode.Mask.InnerPort,
+		"publicPort":           outNode.Port,
+		"publicIP":             publicIP,
+		"cloudflareEnabled":    outNode.Mask.CloudflareEnabled,
+		"cloudflareApiToken":   outNode.Mask.CloudflareAPIToken.String,
+		"cloudflareZoneId":     outNode.Mask.CloudflareZoneID.String,
+		"cloudflareRecordName": outNode.Mask.CloudflareRecordName.String,
+	}
+	_, err := h.sendNodeCommandWithTimeout(nodeID, "ConfigureMaskSite", payload, 2*time.Minute, false, false)
+	if err != nil {
+		_ = h.repo.UpdateTunnelMaskStatus(outNode.Mask.TunnelID, "error", err.Error())
+		return err
+	}
+	_ = h.repo.UpdateTunnelMaskStatus(outNode.Mask.TunnelID, "active", "")
+	return nil
+}
+
+func (h *Handler) removeTunnelMaskSite(nodeID, tunnelID int64) {
+	if h == nil || nodeID <= 0 || tunnelID <= 0 {
+		return
+	}
+	_, _ = h.sendNodeCommandWithTimeout(nodeID, "RemoveMaskSite", map[string]interface{}{"tunnelId": tunnelID}, 45*time.Second, false, true)
 }
 
 func (h *Handler) applyTunnelChainOnNode(nodeID int64, chainData map[string]interface{}, upsert bool) error {
@@ -4118,6 +4345,12 @@ func buildTunnelChainConfig(tunnelID int64, fromNodeID int64, targets []tunnelRu
 			return nil, errors.New("节点端口不能为空")
 		}
 		protocol := defaultString(target.Protocol, "tls")
+		dialProtocol := protocol
+		dialMask := target.Mask
+		if dialMask != nil && dialMask.Enabled == 1 {
+			host = dialMask.Domain
+			dialProtocol = target.Protocol
+		}
 		connector := map[string]interface{}{
 			"type": "relay",
 		}
@@ -4143,19 +4376,16 @@ func buildTunnelChainConfig(tunnelID int64, fromNodeID int64, targets []tunnelRu
 			"name":      fmt.Sprintf("node_%d", idx+1),
 			"addr":      processServerAddress(fmt.Sprintf("%s:%d", host, port)),
 			"connector": connector,
-			"dialer":    buildTunnelDialerConfig(protocol),
+			"dialer":    buildTunnelDialerConfig(dialProtocol, dialMask),
 		})
 	}
 
 	strategy := runtimeTunnelStrategy(defaultString(strings.TrimSpace(targets[0].Strategy), "round"))
+	selector := tunnelSelectorConfig(strategy)
 	hop := map[string]interface{}{
-		"name": fmt.Sprintf("hop_%d", tunnelID),
-		"selector": map[string]interface{}{
-			"strategy":    strategy,
-			"maxFails":    1,
-			"failTimeout": int64(600000000000),
-		},
-		"nodes": nodeItems,
+		"name":     fmt.Sprintf("hop_%d", tunnelID),
+		"selector": selector,
+		"nodes":    nodeItems,
 	}
 	if strings.TrimSpace(fromNode.InterfaceName) != "" {
 		hop["interface"] = fromNode.InterfaceName
@@ -4165,6 +4395,20 @@ func buildTunnelChainConfig(tunnelID int64, fromNodeID int64, targets []tunnelRu
 		"name": fmt.Sprintf("chains_%d", tunnelID),
 		"hops": []map[string]interface{}{hop},
 	}, nil
+}
+
+func tunnelSelectorConfig(strategy string) map[string]interface{} {
+	strategy = strings.ToLower(strings.TrimSpace(defaultString(strategy, "round")))
+	cfg := map[string]interface{}{"strategy": strategy}
+	switch strategy {
+	case "fifo", "ha":
+		cfg["maxFails"] = 1
+		cfg["failTimeout"] = int64(600000000000)
+	default:
+		cfg["maxFails"] = 3
+		cfg["failTimeout"] = int64(30000000000)
+	}
+	return cfg
 }
 
 func (h *Handler) orderBestExitTargets(tunnelID, ownerNodeID int64, targets []tunnelRuntimeNode) []tunnelRuntimeNode {
@@ -4214,11 +4458,22 @@ func buildTunnelChainServiceConfig(tunnelID int64, chainNode tunnelRuntimeNode, 
 	if nextHopCandidateCount > 1 {
 		handlerCfg["retries"] = nextHopCandidateCount - 1
 	}
+	listenAddr := processServerAddress(fmt.Sprintf("%s:%d", defaultString(strings.TrimSpace(chainNode.ConnectIP), node.TCPListenAddr), chainNode.Port))
+	listenerProtocol := protocol
+	listenerMask := chainNode.Mask
+	if listenerMask != nil && listenerMask.Enabled == 1 && chainNode.ChainType == 3 {
+		listenAddr = fmt.Sprintf("127.0.0.1:%d", listenerMask.InnerPort)
+		if protocol == "mwss" {
+			listenerProtocol = "mws"
+		} else if protocol == "wss" {
+			listenerProtocol = "ws"
+		}
+	}
 	service := map[string]interface{}{
 		"name":     fmt.Sprintf("tunnel_%d", tunnelID),
-		"addr":     processServerAddress(fmt.Sprintf("%s:%d", defaultString(strings.TrimSpace(chainNode.ConnectIP), node.TCPListenAddr), chainNode.Port)),
+		"addr":     listenAddr,
 		"handler":  handlerCfg,
-		"listener": buildTunnelListenerConfig(protocol),
+		"listener": buildTunnelListenerConfig(listenerProtocol, listenerMask),
 	}
 	if chainNode.ChainType == 2 {
 		service["handler"].(map[string]interface{})["chain"] = fmt.Sprintf("chains_%d", tunnelID)
@@ -4314,12 +4569,20 @@ func isTLSTunnelProtocol(protocol string) bool {
 	return strings.EqualFold(strings.TrimSpace(defaultString(protocol, "tls")), "tls")
 }
 
-func buildTunnelDialerConfig(protocol string) map[string]interface{} {
+func buildTunnelDialerConfig(protocol string, mask ...*model.TunnelMaskConfig) map[string]interface{} {
 	dialer := map[string]interface{}{
 		"type": protocol,
 	}
+	if isTLSClientHelloProtocol(protocol) {
+		dialer["metadata"] = mergeMetadata(dialer["metadata"], map[string]interface{}{
+			"tls.fingerprint": "chrome",
+		})
+	}
+	if cfg := firstEnabledMask(mask); cfg != nil && isWebSocketTunnelProtocol(protocol) {
+		dialer["metadata"] = mergeMetadata(dialer["metadata"], maskWebSocketMetadata(cfg))
+	}
 	if isKCPTunnelProtocol(protocol) {
-		dialer["metadata"] = map[string]interface{}{
+		dialer["metadata"] = mergeMetadata(dialer["metadata"], map[string]interface{}{
 			"kcp.keepalive":   10,
 			"kcp.tcp":         false,
 			"kcp.mode":        "fast3",
@@ -4333,17 +4596,20 @@ func buildTunnelDialerConfig(protocol string) map[string]interface{} {
 			"kcp.parityshard": 3,
 			"kcp.nocomp":      true,
 			"kcp.nc":          1,
-		}
+		})
 	}
 	return dialer
 }
 
-func buildTunnelListenerConfig(protocol string) map[string]interface{} {
+func buildTunnelListenerConfig(protocol string, mask ...*model.TunnelMaskConfig) map[string]interface{} {
 	listener := map[string]interface{}{
 		"type": protocol,
 	}
+	if cfg := firstEnabledMask(mask); cfg != nil && isWebSocketTunnelProtocol(protocol) {
+		listener["metadata"] = mergeMetadata(listener["metadata"], maskWebSocketMetadata(cfg))
+	}
 	if isKCPTunnelProtocol(protocol) {
-		listener["metadata"] = map[string]interface{}{
+		listener["metadata"] = mergeMetadata(listener["metadata"], map[string]interface{}{
 			"kcp.keepalive":   10,
 			"kcp.tcp":         false,
 			"kcp.mode":        "fast3",
@@ -4357,9 +4623,54 @@ func buildTunnelListenerConfig(protocol string) map[string]interface{} {
 			"kcp.parityshard": 3,
 			"kcp.nocomp":      true,
 			"kcp.nc":          1,
-		}
+		})
 	}
 	return listener
+}
+
+func isWebSocketTunnelProtocol(protocol string) bool {
+	p := strings.ToLower(strings.TrimSpace(protocol))
+	return p == "ws" || p == "wss" || p == "mws" || p == "mwss"
+}
+
+func isTLSClientHelloProtocol(protocol string) bool {
+	p := strings.ToLower(strings.TrimSpace(protocol))
+	return p == "tls" || p == "mtls" || p == "wss" || p == "mwss"
+}
+
+func firstEnabledMask(items []*model.TunnelMaskConfig) *model.TunnelMaskConfig {
+	for _, item := range items {
+		if item != nil && item.Enabled == 1 {
+			return item
+		}
+	}
+	return nil
+}
+
+func mergeMetadata(base interface{}, extra map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if m, ok := base.(map[string]interface{}); ok {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func maskWebSocketMetadata(cfg *model.TunnelMaskConfig) map[string]interface{} {
+	host := strings.TrimSpace(cfg.Domain)
+	return map[string]interface{}{
+		"ws.path": normalizeMaskWSPath(cfg.WSPath),
+		"ws.host": host,
+		"ws.header": map[string]string{
+			"Host":       host,
+			"Origin":     "https://" + host,
+			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+		},
+	}
 }
 
 func nodeSupportsV4(node *nodeRecord) bool {

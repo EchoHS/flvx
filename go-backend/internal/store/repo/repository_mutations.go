@@ -471,6 +471,75 @@ func (r *Repository) CreateChainTunnelTx(tx *gorm.DB, tunnelID int64, chainType 
 	return tx.Create(&ct).Error
 }
 
+func (r *Repository) UpsertTunnelMaskConfigTx(tx *gorm.DB, cfg model.TunnelMaskConfig) error {
+	if tx == nil {
+		return errors.New("database unavailable")
+	}
+	if cfg.TunnelID <= 0 {
+		return errors.New("隧道ID不能为空")
+	}
+	return tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "tunnel_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"enabled", "domain", "ws_path", "site_repo", "site_dir", "acme_email", "inner_port",
+			"cloudflare_enabled", "cloudflare_api_token", "cloudflare_zone_id", "cloudflare_record_name",
+			"status", "last_error", "updated_time",
+		}),
+	}).Create(&cfg).Error
+}
+
+func (r *Repository) DeleteTunnelMaskConfigTx(tx *gorm.DB, tunnelID int64) error {
+	if tx == nil {
+		return errors.New("database unavailable")
+	}
+	return tx.Where("tunnel_id = ?", tunnelID).Delete(&model.TunnelMaskConfig{}).Error
+}
+
+func (r *Repository) GetTunnelMaskConfigTx(tx *gorm.DB, tunnelID int64) (*model.TunnelMaskConfig, error) {
+	if tx == nil {
+		return nil, errors.New("database unavailable")
+	}
+	var cfg model.TunnelMaskConfig
+	err := tx.Where("tunnel_id = ?", tunnelID).First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func (r *Repository) GetTunnelMaskConfig(tunnelID int64) (*model.TunnelMaskConfig, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("repository not initialized")
+	}
+	return r.GetTunnelMaskConfigTx(r.db, tunnelID)
+}
+
+func (r *Repository) UpdateTunnelMaskStatus(tunnelID int64, status, lastError string) error {
+	if r == nil || r.db == nil {
+		return errors.New("repository not initialized")
+	}
+	if tunnelID <= 0 {
+		return errors.New("隧道ID不能为空")
+	}
+	return r.db.Model(&model.TunnelMaskConfig{}).
+		Where("tunnel_id = ?", tunnelID).
+		Updates(map[string]interface{}{
+			"status":       strings.TrimSpace(status),
+			"last_error":   strings.TrimSpace(lastError),
+			"updated_time": time.Now().UnixMilli(),
+		}).Error
+}
+
+func (r *Repository) DeleteTunnelMaskConfig(tunnelID int64) error {
+	if r == nil || r.db == nil {
+		return errors.New("repository not initialized")
+	}
+	return r.db.Where("tunnel_id = ?", tunnelID).Delete(&model.TunnelMaskConfig{}).Error
+}
+
 func (r *Repository) IsRemoteNodeTx(tx *gorm.DB, nodeID int64) (bool, error) {
 	if tx == nil {
 		return false, errors.New("database unavailable")
@@ -495,6 +564,75 @@ func (r *Repository) PickNodePortTx(tx *gorm.DB, nodeID int64, allocated map[int
 
 func (r *Repository) PickRandomNodePortTx(tx *gorm.DB, nodeID int64, allocated map[int64]int, excludeTunnelID int64) (int, error) {
 	return r.pickNodePortTx(tx, nodeID, allocated, excludeTunnelID, true)
+}
+
+func (r *Repository) PickPreferredNodePortTx(tx *gorm.DB, nodeID int64, requestedPort int, allocated map[int64]int, excludeTunnelID int64, randomPick bool) (int, error) {
+	if requestedPort > 0 {
+		if err := r.ValidateNodePortAvailableTx(tx, nodeID, requestedPort, allocated, excludeTunnelID); err != nil {
+			return 0, err
+		}
+		if allocated != nil {
+			allocated[nodeID] = requestedPort
+		}
+		return requestedPort, nil
+	}
+	if tx == nil {
+		return 0, errors.New("database unavailable")
+	}
+	return r.pickNodePortTx(tx, nodeID, allocated, excludeTunnelID, randomPick)
+}
+
+func (r *Repository) ValidateNodePortAvailableTx(tx *gorm.DB, nodeID int64, port int, allocated map[int64]int, excludeTunnelID int64) error {
+	if tx == nil {
+		return errors.New("database unavailable")
+	}
+	if nodeID <= 0 {
+		return errors.New("节点不存在")
+	}
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("端口 %d 无效", port)
+	}
+	if allocated != nil {
+		if p, ok := allocated[nodeID]; ok && p > 0 && p != port {
+			return fmt.Errorf("节点已在本次隧道中分配端口 %d", p)
+		}
+	}
+	var node model.Node
+	err := tx.Select("port").Where("id = ?", nodeID).First(&node).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("节点不存在")
+	}
+	if err != nil {
+		return err
+	}
+	inPool := false
+	for _, candidate := range parsePortRangeSpec(node.Port) {
+		if candidate == port {
+			inPool = true
+			break
+		}
+	}
+	if !inPool {
+		return fmt.Errorf("端口 %d 不在节点可用端口池内", port)
+	}
+	chainQuery := tx.Model(&model.ChainTunnel{}).Where("node_id = ? AND port = ?", nodeID, port)
+	if excludeTunnelID > 0 {
+		chainQuery = chainQuery.Where("tunnel_id != ?", excludeTunnelID)
+	}
+	var count int64
+	if err := chainQuery.Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("端口 %d 已被其他隧道占用", port)
+	}
+	if err := tx.Model(&model.ForwardPort{}).Where("node_id = ? AND port = ?", nodeID, port).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("端口 %d 已被转发规则占用", port)
+	}
+	return nil
 }
 
 func (r *Repository) pickNodePortTx(tx *gorm.DB, nodeID int64, allocated map[int64]int, excludeTunnelID int64, randomPick bool) (int, error) {
@@ -606,6 +744,9 @@ func (r *Repository) DeleteTunnelCascade(tunnelID int64) error {
 			return err
 		}
 		if err := tx.Where("tunnel_id = ?", tunnelID).Delete(&model.ChainTunnel{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("tunnel_id = ?", tunnelID).Delete(&model.TunnelMaskConfig{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("tunnel_id = ?", tunnelID).Delete(&model.FederationTunnelBinding{}).Error; err != nil {

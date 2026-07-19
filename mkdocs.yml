@@ -1,7 +1,7 @@
 site_name: FLVX 文档
 site_url: https://sagit-chu.github.io/flux-panel/
 site_description: FLVX官方文档
-site_author: Sagit-chu
+site_author: EchoHS
 
 theme:
   name: material

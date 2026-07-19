@@ -79,7 +79,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25.0'
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -179,9 +179,14 @@ jobs:
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --push \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.version=${VERSION} \
             -t ${{ env.REGISTRY }}/${OWNER}/vite-frontend:latest \
             -t ${{ env.REGISTRY }}/${OWNER}/vite-frontend:${VERSION} \
             ./vite-frontend
+
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${OWNER}/vite-frontend:${VERSION}
 
   build-go-backend:
     name: Build & Push Go Backend
@@ -197,7 +202,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25.0'
 
       - name: Cache Go dependencies
         uses: actions/cache@v4
@@ -230,9 +235,14 @@ jobs:
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --push \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.version=${VERSION} \
             -t ${{ env.REGISTRY }}/${OWNER}/flux-panel-backend:latest \
             -t ${{ env.REGISTRY }}/${OWNER}/flux-panel-backend:${VERSION} \
             ./go-backend
+
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${OWNER}/flux-panel-backend:${VERSION}
 
   create-release:
     name: Create Release (Tag Only)
@@ -294,8 +304,8 @@ jobs:
           cp panel_install.sh ./artifacts/panel_install.sh
 
           # 替换仓库地址和版本号
-          sed -i "s|bqlpfy/flux-panel|${REPO}|g" ./artifacts/install.sh
-          sed -i "s|bqlpfy/flux-panel|${REPO}|g" ./artifacts/panel_install.sh
+          sed -i "s|EchoHS/flvx|${REPO}|g" ./artifacts/install.sh
+          sed -i "s|EchoHS/flvx|${REPO}|g" ./artifacts/panel_install.sh
           sed -i "s|2.0.7-beta|${VERSION}|g" ./artifacts/install.sh
           sed -i "s|2.0.7-beta|${VERSION}|g" ./artifacts/panel_install.sh
 
@@ -431,4 +441,3 @@ jobs:
           gh release upload "${VERSION}" ./artifacts/gost-arm64.sha256 --clobber
 
           echo "✅ GOST 二进制文件更新完成"
-

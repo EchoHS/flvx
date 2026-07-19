@@ -35,7 +35,7 @@
 找到第 16-26 行：
 ```go
 const (
-	githubRepo     = "Sagit-chu/flvx"
+	githubRepo     = "EchoHS/flvx"
 	githubProxy    = "https://gcode.hostcentral.cc"
 	githubAPIBase  = "https://api.github.com"
 	githubHTMLBase = "https://github.com"
@@ -50,7 +50,7 @@ const (
 替换为：
 ```go
 const (
-	githubRepo     = "Sagit-chu/flvx"
+	githubRepo     = "EchoHS/flvx"
 	githubAPIBase  = "https://api.github.com"
 	githubHTMLBase = "https://github.com"
 	upgradeTimeout = 5 * time.Minute
@@ -169,7 +169,7 @@ git commit -m "feat(backend): use configurable github proxy for node upgrades"
 
 找到第 456 行：
 ```go
-	cmd := fmt.Sprintf("curl -L https://gcode.hostcentral.cc/https://github.com/Sagit-chu/flvx/releases/download/%s/install.sh -o ./install.sh && chmod +x ./install.sh && VERSION=%s ./install.sh -a %s -s %s", version, version, processServerAddress(panelAddr), secret)
+	cmd := fmt.Sprintf("curl -L https://gcode.hostcentral.cc/https://github.com/EchoHS/flvx/releases/download/%s/install.sh -o ./install.sh && chmod +x ./install.sh && VERSION=%s ./install.sh -a %s -s %s", version, version, processServerAddress(panelAddr), secret)
 ```
 
 替换为：

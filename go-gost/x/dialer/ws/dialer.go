@@ -2,12 +2,14 @@ package ws
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/url"
 	"time"
 
 	"github.com/go-gost/core/dialer"
 	md "github.com/go-gost/core/metadata"
+	utls_util "github.com/go-gost/x/internal/util/utls"
 	ws_util "github.com/go-gost/x/internal/util/ws"
 	"github.com/go-gost/x/registry"
 	"github.com/gorilla/websocket"
@@ -94,7 +96,11 @@ func (d *wsDialer) Handshake(ctx context.Context, conn net.Conn, options ...dial
 	url := url.URL{Scheme: "ws", Host: host, Path: d.md.path}
 	if d.tlsEnabled {
 		url.Scheme = "wss"
-		dialer.TLSClientConfig = d.options.TLSConfig
+		tlsConfig := wsTLSConfig(d.options.TLSConfig, host)
+		dialer.TLSClientConfig = tlsConfig
+		dialer.NetDialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return utls_util.Client(ctx, conn, tlsConfig, d.md.fingerprint)
+		}
 	}
 
 	c, resp, err := dialer.DialContext(ctx, url.String(), d.md.header)
@@ -117,6 +123,22 @@ func (d *wsDialer) Handshake(ctx context.Context, conn net.Conn, options ...dial
 	}
 
 	return cc, nil
+}
+
+func wsTLSConfig(cfg *tls.Config, host string) *tls.Config {
+	if cfg == nil {
+		cfg = &tls.Config{}
+	} else {
+		cfg = cfg.Clone()
+	}
+	if cfg.ServerName == "" {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			cfg.ServerName = h
+		} else {
+			cfg.ServerName = host
+		}
+	}
+	return cfg
 }
 
 func (d *wsDialer) keepalive(conn ws_util.WebsocketConn) {
