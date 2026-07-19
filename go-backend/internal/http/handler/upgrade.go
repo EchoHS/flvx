@@ -2,9 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -47,6 +50,21 @@ type githubRelease struct {
 	PublishedAt string `json:"published_at"`
 	Prerelease  bool   `json:"prerelease"`
 	Draft       bool   `json:"draft"`
+}
+
+type githubReleaseAtom struct {
+	Entries []struct {
+		Title   string `xml:"title"`
+		Updated string `xml:"updated"`
+		Links   []struct {
+			Rel  string `xml:"rel,attr"`
+			Href string `xml:"href,attr"`
+		} `xml:"link"`
+	} `xml:"entry"`
+}
+
+var githubHTTPGet = func(client *http.Client, url string) (*http.Response, error) {
+	return client.Get(url)
 }
 
 func normalizeReleaseChannel(channel string) string {
@@ -114,13 +132,13 @@ func (h *Handler) buildGithubDownloadURL(version, filename string) string {
 	return base
 }
 
-func fetchGitHubReleases(perPage int) ([]githubRelease, error) {
+func fetchGitHubReleasesDirect(perPage int) ([]githubRelease, error) {
 	if perPage <= 0 {
 		perPage = 20
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("%s/repos/%s/releases?per_page=%d", githubAPIBase, githubRepo, perPage))
+	resp, err := githubHTTPGet(client, fmt.Sprintf("%s/repos/%s/releases?per_page=%d", githubAPIBase, githubRepo, perPage))
 	if err != nil {
 		return nil, fmt.Errorf("请求GitHub API失败: %v", err)
 	}
@@ -137,6 +155,96 @@ func fetchGitHubReleases(perPage int) ([]githubRelease, error) {
 	}
 
 	return releases, nil
+}
+
+func githubReleaseTagFromAtomEntry(title string, links []struct {
+	Rel  string `xml:"rel,attr"`
+	Href string `xml:"href,attr"`
+}) string {
+	href := ""
+	for _, link := range links {
+		if link.Rel == "alternate" {
+			href = link.Href
+			break
+		}
+		if href == "" {
+			href = link.Href
+		}
+	}
+	if parsed, err := url.Parse(strings.TrimSpace(href)); err == nil {
+		marker := "/releases/tag/"
+		if index := strings.Index(parsed.Path, marker); index >= 0 {
+			tag := strings.Trim(strings.TrimPrefix(parsed.Path[index+len(marker):], "/"), "/")
+			if decoded, err := url.PathUnescape(tag); err == nil {
+				tag = decoded
+			}
+			if tag != "" {
+				return tag
+			}
+		}
+		if tag := path.Base(strings.TrimSuffix(parsed.Path, "/")); tag != "." && tag != "/" {
+			if decoded, err := url.PathUnescape(tag); err == nil {
+				return decoded
+			}
+			return tag
+		}
+	}
+	return strings.TrimSpace(title)
+}
+
+func fetchGitHubReleasesAtom(feedURL string, perPage int) ([]githubRelease, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := githubHTTPGet(client, feedURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("GitHub release feed returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var feed githubReleaseAtom
+	if err := xml.NewDecoder(resp.Body).Decode(&feed); err != nil {
+		return nil, fmt.Errorf("parse GitHub release feed: %w", err)
+	}
+	if len(feed.Entries) == 0 {
+		return nil, fmt.Errorf("GitHub release feed is empty")
+	}
+
+	if perPage <= 0 || perPage > len(feed.Entries) {
+		perPage = len(feed.Entries)
+	}
+	releases := make([]githubRelease, 0, perPage)
+	for _, entry := range feed.Entries[:perPage] {
+		tag := githubReleaseTagFromAtomEntry(entry.Title, entry.Links)
+		if tag == "" {
+			continue
+		}
+		releases = append(releases, githubRelease{
+			TagName:     tag,
+			Name:        strings.TrimSpace(entry.Title),
+			PublishedAt: strings.TrimSpace(entry.Updated),
+		})
+	}
+	if len(releases) == 0 {
+		return nil, fmt.Errorf("GitHub release feed has no usable tags")
+	}
+	return releases, nil
+}
+
+func fetchGitHubReleases(perPage int) ([]githubRelease, error) {
+	return fetchGitHubReleasesDirect(perPage)
+}
+
+func (h *Handler) fetchGitHubReleases(perPage int) ([]githubRelease, error) {
+	if enabled, proxyURL := h.getGithubProxyConfig(); enabled {
+		feedURL := fmt.Sprintf("%s/%s/%s/releases.atom", strings.TrimRight(proxyURL, "/"), githubHTMLBase, githubRepo)
+		if releases, err := fetchGitHubReleasesAtom(feedURL, perPage); err == nil {
+			return releases, nil
+		}
+	}
+	return fetchGitHubReleasesDirect(perPage)
 }
 
 func resolveLatestReleaseByChannel(channel string) (string, error) {
@@ -186,7 +294,7 @@ func (h *Handler) nodeUpgrade(w http.ResponseWriter, r *http.Request) {
 	version := strings.TrimSpace(req.Version)
 	if version == "" {
 		var err error
-		version, err = resolveLatestReleaseByChannel(channel)
+		version, err = h.resolveLatestReleaseByChannel(channel)
 		if err != nil {
 			response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
 			return
@@ -210,6 +318,25 @@ func (h *Handler) nodeUpgrade(w http.ResponseWriter, r *http.Request) {
 		"version": version,
 		"message": result.Message,
 	}))
+}
+
+func (h *Handler) resolveLatestReleaseByChannel(channel string) (string, error) {
+	normalizedChannel := normalizeReleaseChannel(channel)
+	releases, err := h.fetchGitHubReleases(50)
+	if err != nil {
+		return "", err
+	}
+
+	for _, release := range releases {
+		if release.Draft {
+			continue
+		}
+		tag := strings.TrimSpace(release.TagName)
+		if tag != "" && releaseChannelFromTag(tag) == normalizedChannel {
+			return tag, nil
+		}
+	}
+	return "", fmt.Errorf("未找到%s版本号", releaseChannelLabel(normalizedChannel))
 }
 
 func resolveLatestRelease() (string, error) {
@@ -244,7 +371,7 @@ func (h *Handler) nodeBatchUpgrade(w http.ResponseWriter, r *http.Request) {
 	version := strings.TrimSpace(req.Version)
 	if version == "" {
 		var err error
-		version, err = resolveLatestReleaseByChannel(channel)
+		version, err = h.resolveLatestReleaseByChannel(channel)
 		if err != nil {
 			response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
 			return
@@ -307,7 +434,7 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
 
 	channel := normalizeReleaseChannel(req.Channel)
 
-	releases, err := fetchGitHubReleases(50)
+	releases, err := h.fetchGitHubReleases(50)
 	if err != nil {
 		response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取版本列表失败: %v", err)))
 		return

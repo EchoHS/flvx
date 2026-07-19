@@ -192,7 +192,7 @@ const CONFIG_ITEMS: ConfigItem[] = [
   {
     key: "github_proxy_enabled",
     label: "开启 GitHub 加速",
-    description: "用于节点更新和安装脚本下载，解决部分地区 GitHub 访问受限问题",
+    description: "用于节点版本查询、节点更新和安装脚本下载，解决部分地区 GitHub 访问受限问题",
     type: "switch",
   },
   {
