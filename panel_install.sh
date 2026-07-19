@@ -37,6 +37,10 @@ maybe_proxy_url() {
   echo "${proxy}/${url}"
 }
 
+is_valid_release_tag() {
+  [[ "$1" =~ ^[0-9][0-9A-Za-z._-]*$ ]]
+}
+
 ask_proxy_config() {
   if [[ -n "$PROXY_ENABLED" ]]; then
     return
@@ -79,13 +83,13 @@ resolve_latest_release_tag() {
 
   effective_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' -L "$(maybe_proxy_url "$latest_url")" 2>/dev/null || true)
   tag="${effective_url##*/}"
-  if [[ -n "$tag" && "$tag" != "latest" ]]; then
+  if is_valid_release_tag "$tag"; then
     echo "$tag"
     return 0
   fi
 
   api_tag=$(curl -fsSL "$(maybe_proxy_url "$api_url")" 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)
-  if [[ -n "$api_tag" ]]; then
+  if is_valid_release_tag "$api_tag"; then
     echo "$api_tag"
     return 0
   fi

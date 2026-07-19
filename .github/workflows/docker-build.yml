@@ -8,6 +8,12 @@ on:
   push:
     tags:
       - '[0-9]*'  # 匹配 2.0.8, 2.0.8-beta 等格式
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要构建并发布的版本 Tag，例如 3.0.1'
+        required: true
+        type: string
 
 jobs:
   check-version:
@@ -23,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.version || github.ref }}
 
       - name: Determine version and build strategy
         id: version
@@ -31,7 +38,14 @@ jobs:
           IMAGE_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "image_owner=$IMAGE_OWNER" >> $GITHUB_OUTPUT
 
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+            echo "▶️ Manual workflow dispatch detected: $VERSION"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build_gost=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
             # Tag 触发：直接使用 tag 名作为版本，全量构建
             VERSION="${{ github.ref_name }}"
             echo "🏷️ Tag trigger detected: $VERSION"
@@ -68,6 +82,11 @@ jobs:
             fi
           fi
 
+          if ! [[ "$VERSION" =~ ^[0-9][0-9A-Za-z._-]*$ ]]; then
+            echo "❌ Invalid release version: $VERSION"
+            exit 1
+          fi
+
   build-gost:
     name: Build & Compress GOST Binary
     needs: check-version
@@ -75,6 +94,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-version.outputs.version }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -93,10 +114,14 @@ jobs:
 
       - name: Install UPX
         run: |
-          wget -q https://github.com/upx/upx/releases/download/v4.2.1/upx-4.2.1-amd64_linux.tar.xz
-          tar -xf upx-4.2.1-amd64_linux.tar.xz
-          sudo mv upx-4.2.1-amd64_linux/upx /usr/local/bin/
-          rm -rf upx-4.2.1-amd64_linux*
+          if wget -q https://github.com/upx/upx/releases/download/v4.2.1/upx-4.2.1-amd64_linux.tar.xz \
+            && tar -xf upx-4.2.1-amd64_linux.tar.xz \
+            && sudo mv upx-4.2.1-amd64_linux/upx /usr/local/bin/; then
+            echo "✅ UPX installed"
+          else
+            echo "::warning::UPX installation failed; binaries will remain uncompressed"
+          fi
+          rm -rf upx-4.2.1-amd64_linux.tar.xz upx-4.2.1-amd64_linux
 
       - name: Build GOST binary (AMD64)
         working-directory: ./go-gost
@@ -109,8 +134,15 @@ jobs:
       - name: Compress with UPX
         working-directory: ./go-gost
         run: |
-          upx --best --lzma gost-amd64
-          upx --best --lzma gost-arm64
+          if ! command -v upx >/dev/null 2>&1; then
+            echo "::warning::UPX is unavailable; binaries will remain uncompressed"
+          else
+            for binary in gost-amd64 gost-arm64; do
+              if ! upx --best --lzma "$binary"; then
+                echo "::warning::UPX compression failed for $binary; keeping the built binary"
+              fi
+            done
+          fi
 
       - name: Generate SHA256 checksums
         working-directory: ./go-gost
@@ -152,6 +184,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-version.outputs.version }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -198,6 +232,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-version.outputs.version }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -245,49 +281,24 @@ jobs:
           docker buildx imagetools inspect ${{ env.REGISTRY }}/${OWNER}/flux-panel-backend:${VERSION}
 
   create-release:
-    name: Create Release (Tag Only)
-    needs: [check-version, build-gost, build-vite, build-go-backend]
+    name: Create Panel Release
+    needs: [check-version, build-vite, build-go-backend]
     if: needs.check-version.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download GOST AMD64 binary
-        uses: actions/download-artifact@v4
         with:
-          name: gost-binary-amd64
-          path: ./artifacts/amd64
-
-      - name: Download GOST ARM64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: gost-binary-arm64
-          path: ./artifacts/arm64
-
-      - name: Download GOST AMD64 checksum
-        uses: actions/download-artifact@v4
-        with:
-          name: gost-checksum-amd64
-          path: ./artifacts/
-
-      - name: Download GOST ARM64 checksum
-        uses: actions/download-artifact@v4
-        with:
-          name: gost-checksum-arm64
-          path: ./artifacts/
+          ref: ${{ needs.check-version.outputs.version }}
 
       - name: Prepare release files
-
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           OWNER="${{ needs.check-version.outputs.image_owner }}"
           REPO="${{ github.repository }}"
 
-          # 移动二进制文件
-          mv ./artifacts/amd64/gost-amd64 ./artifacts/gost-amd64
-          mv ./artifacts/arm64/gost-arm64 ./artifacts/gost-arm64
+          mkdir -p ./artifacts
 
           # 复制并修改 docker-compose 文件
           cp docker-compose-v4.yml ./artifacts/docker-compose-v4.yml
@@ -313,7 +324,7 @@ jobs:
           sed -i "s|^PINNED_VERSION=\"\"|PINNED_VERSION=\"${VERSION}\"|" ./artifacts/install.sh
           sed -i "s|^PINNED_VERSION=\"\"|PINNED_VERSION=\"${VERSION}\"|" ./artifacts/panel_install.sh
 
-      - name: Create Release
+      - name: Create or Update Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -324,14 +335,21 @@ jobs:
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
           COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
           COMMIT_DATE=$(git log -1 --pretty=format:"%ai")
+          RELEASE_SHA=$(git rev-parse HEAD)
 
-          # 创建 release
-          gh release create "${VERSION}" \
+          if gh release view "${VERSION}" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            RELEASE_ACTION="edit"
+          else
+            RELEASE_ACTION="create"
+          fi
+
+          # 创建或更新 release，保证手动重跑时可以恢复缺失的附件。
+          gh release "${RELEASE_ACTION}" "${VERSION}" \
             --title "Release ${VERSION}" \
             --notes "## 📝 Release Information
 
           - **Version**: ${VERSION}
-          - **Commit**: [\`${GITHUB_SHA:0:7}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          - **Commit**: [\`${RELEASE_SHA:0:7}\`](https://github.com/${{ github.repository }}/commit/${RELEASE_SHA})
           - **Author**: ${COMMIT_AUTHOR}
           - **Date**: ${COMMIT_DATE}
           - **Message**: ${COMMIT_MSG}
@@ -367,15 +385,6 @@ jobs:
           \`\`\`" \
             --repo ${{ github.repository }}
 
-          # 上传所有文件到 release
-          echo "📤 上传 GOST 二进制文件..."
-          gh release upload "${VERSION}" ./artifacts/gost-amd64 --clobber
-          gh release upload "${VERSION}" ./artifacts/gost-arm64 --clobber
-
-          echo "📤 上传 GOST 校验文件..."
-          gh release upload "${VERSION}" ./artifacts/gost-amd64.sha256 --clobber
-          gh release upload "${VERSION}" ./artifacts/gost-arm64.sha256 --clobber
-
           echo "📤 上传安装脚本..."
           gh release upload "${VERSION}" ./artifacts/install.sh --clobber
           gh release upload "${VERSION}" ./artifacts/panel_install.sh --clobber
@@ -386,16 +395,14 @@ jobs:
 
           echo "✅ Release ${VERSION} 创建完成"
 
-  update-release-gost:
-    name: Update GOST Binaries in Release
-    needs: [check-version, build-gost]
-    if: needs.check-version.outputs.is_tag == 'false' && needs.check-version.outputs.should_build == 'false' && needs.check-version.outputs.should_build_gost == 'true'
+  publish-release-gost:
+    name: Add GOST Binaries to Release
+    needs: [check-version, build-gost, create-release]
+    if: needs.check-version.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download GOST AMD64 binary
         uses: actions/download-artifact@v4
         with:
@@ -425,7 +432,7 @@ jobs:
           mv ./artifacts/amd64/gost-amd64 ./artifacts/gost-amd64
           mv ./artifacts/arm64/gost-arm64 ./artifacts/gost-arm64
 
-      - name: Update GOST binaries in Release
+      - name: Upload GOST binaries to Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

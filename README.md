@@ -52,6 +52,8 @@ git tag 2.2.0
 git push origin 2.2.0
 ```
 
+Tag 推送会自动创建 Release，并上传 `docker-compose-v4.yml`、`docker-compose-v6.yml`、`panel_install.sh`、`install.sh` 和 GOST 二进制文件。如果某次 Tag 构建中断，可以在 GitHub 的 **Actions -> Build and Push Images -> Run workflow** 中输入已有版本 Tag 手动重跑；Release 已存在时会更新并补齐附件。
+
 首次发布后，在 GitHub 的 Packages 页面将 `flux-panel-backend` 和 `vite-frontend` 两个 Package 的可见性设为 **Public**。完成后即可在服务器使用上面的 `panel_install.sh` 命令匿名拉取并部署，无需执行 `docker login`。
 
 发布工作流位于 `.github/workflows/docker-build.yml`。仓库 Actions 权限需要允许读取源码、写入 Packages 和创建 Release。安装脚本会在启动前校验 Compose 并主动拉取镜像；若 Release 资源不存在或 GHCR Package 不可匿名访问，会给出明确错误。
