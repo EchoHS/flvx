@@ -106,5 +106,8 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Resolve module graph
+        run: go mod tidy
+
       - name: Build
         run: go build -v .

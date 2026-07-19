@@ -112,6 +112,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      - name: Resolve GOST module graph
+        working-directory: ./go-gost
+        run: go mod tidy
+
       - name: Install UPX
         run: |
           if wget -q https://github.com/upx/upx/releases/download/v4.2.1/upx-4.2.1-amd64_linux.tar.xz \
