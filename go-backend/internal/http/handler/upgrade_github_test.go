@@ -94,6 +94,76 @@ func TestHandlerFetchGitHubReleasesUsesProxyFeed(t *testing.T) {
 	}
 }
 
+func TestHandlerFetchGitHubReleasesFallsBackToDirectFeed(t *testing.T) {
+	repoStore, err := repo.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("repo.Open() error = %v", err)
+	}
+	defer repoStore.Close()
+
+	if err := repoStore.UpsertConfig("github_proxy_enabled", "true", 1); err != nil {
+		t.Fatalf("enable proxy error = %v", err)
+	}
+	if err := repoStore.UpsertConfig("github_proxy_url", "https://proxy.example.com", 1); err != nil {
+		t.Fatalf("proxy URL error = %v", err)
+	}
+
+	originalGet := githubHTTPGet
+	t.Cleanup(func() { githubHTTPGet = originalGet })
+	var gotURLs []string
+	githubHTTPGet = func(client *http.Client, url string) (*http.Response, error) {
+		gotURLs = append(gotURLs, url)
+		if strings.HasPrefix(url, "https://proxy.example.com/") {
+			return testHTTPResponse(http.StatusBadGateway, "proxy unavailable"), nil
+		}
+		return testHTTPResponse(http.StatusOK, testReleaseAtomFeed), nil
+	}
+
+	h := &Handler{repo: repoStore}
+	got, err := h.fetchGitHubReleases(50)
+	if err != nil {
+		t.Fatalf("fetchGitHubReleases() error = %v", err)
+	}
+	if len(got) != 2 || got[0].TagName != "3.0.1" {
+		t.Fatalf("releases = %#v", got)
+	}
+	if len(gotURLs) != 2 || gotURLs[0] != "https://proxy.example.com/https://github.com/EchoHS/flvx/releases.atom" || gotURLs[1] != "https://github.com/EchoHS/flvx/releases.atom" {
+		t.Fatalf("requests = %#v", gotURLs)
+	}
+}
+
+func TestHandlerFetchGitHubReleasesUsesDirectFeedWhenProxyDisabled(t *testing.T) {
+	repoStore, err := repo.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("repo.Open() error = %v", err)
+	}
+	defer repoStore.Close()
+
+	if err := repoStore.UpsertConfig("github_proxy_enabled", "false", 1); err != nil {
+		t.Fatalf("disable proxy error = %v", err)
+	}
+
+	originalGet := githubHTTPGet
+	t.Cleanup(func() { githubHTTPGet = originalGet })
+	var gotURLs []string
+	githubHTTPGet = func(client *http.Client, url string) (*http.Response, error) {
+		gotURLs = append(gotURLs, url)
+		return testHTTPResponse(http.StatusOK, testReleaseAtomFeed), nil
+	}
+
+	h := &Handler{repo: repoStore}
+	got, err := h.fetchGitHubReleases(50)
+	if err != nil {
+		t.Fatalf("fetchGitHubReleases() error = %v", err)
+	}
+	if len(got) != 2 || got[1].TagName != "3.0.0-beta1" {
+		t.Fatalf("releases = %#v", got)
+	}
+	if len(gotURLs) != 1 || gotURLs[0] != "https://github.com/EchoHS/flvx/releases.atom" {
+		t.Fatalf("requests = %#v", gotURLs)
+	}
+}
+
 func TestHandlerFetchGitHubReleasesFallsBackToDirectAPI(t *testing.T) {
 	repoStore, err := repo.Open(t.TempDir() + "/test.db")
 	if err != nil {
@@ -114,9 +184,9 @@ func TestHandlerFetchGitHubReleasesFallsBackToDirectAPI(t *testing.T) {
 	githubHTTPGet = func(client *http.Client, url string) (*http.Response, error) {
 		gotURLs = append(gotURLs, url)
 		if strings.HasSuffix(url, "/releases.atom") {
-			return testHTTPResponse(http.StatusBadGateway, "proxy unavailable"), nil
+			return testHTTPResponse(http.StatusBadGateway, "feed unavailable"), nil
 		}
-		return testHTTPResponse(http.StatusOK, `[{"tag_name":"3.0.1","name":"3.0.1","published_at":"2026-07-19T12:00:00Z"}]`), nil
+		return testHTTPResponse(http.StatusOK, `[{"tag_name":"3.0.1-beta1","name":"3.0.1-beta1","published_at":"2026-07-22T12:00:00Z"}]`), nil
 	}
 
 	h := &Handler{repo: repoStore}
@@ -124,10 +194,10 @@ func TestHandlerFetchGitHubReleasesFallsBackToDirectAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchGitHubReleases() error = %v", err)
 	}
-	if len(got) != 1 || got[0].TagName != "3.0.1" {
+	if len(got) != 1 || got[0].TagName != "3.0.1-beta1" {
 		t.Fatalf("releases = %#v", got)
 	}
-	if len(gotURLs) != 2 || !strings.HasSuffix(gotURLs[0], "/releases.atom") || gotURLs[1] != "https://api.github.com/repos/EchoHS/flvx/releases?per_page=50" {
+	if len(gotURLs) != 3 || gotURLs[2] != "https://api.github.com/repos/EchoHS/flvx/releases?per_page=50" {
 		t.Fatalf("requests = %#v", gotURLs)
 	}
 }

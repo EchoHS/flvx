@@ -233,18 +233,43 @@ func fetchGitHubReleasesAtom(feedURL string, perPage int) ([]githubRelease, erro
 	return releases, nil
 }
 
+func githubReleaseFeedURL() string {
+	return fmt.Sprintf("%s/%s/releases.atom", strings.TrimRight(githubHTMLBase, "/"), githubRepo)
+}
+
 func fetchGitHubReleases(perPage int) ([]githubRelease, error) {
-	return fetchGitHubReleasesDirect(perPage)
+	feedURL := githubReleaseFeedURL()
+	releases, feedErr := fetchGitHubReleasesAtom(feedURL, perPage)
+	if feedErr == nil {
+		return releases, nil
+	}
+
+	releases, apiErr := fetchGitHubReleasesDirect(perPage)
+	if apiErr == nil {
+		return releases, nil
+	}
+	return nil, fmt.Errorf("GitHub发布源请求失败: %v; GitHub API请求失败: %w", feedErr, apiErr)
 }
 
 func (h *Handler) fetchGitHubReleases(perPage int) ([]githubRelease, error) {
+	var proxyErr error
 	if enabled, proxyURL := h.getGithubProxyConfig(); enabled {
-		feedURL := fmt.Sprintf("%s/%s/%s/releases.atom", strings.TrimRight(proxyURL, "/"), githubHTMLBase, githubRepo)
+		feedURL := fmt.Sprintf("%s/%s", strings.TrimRight(proxyURL, "/"), githubReleaseFeedURL())
 		if releases, err := fetchGitHubReleasesAtom(feedURL, perPage); err == nil {
 			return releases, nil
+		} else {
+			proxyErr = err
 		}
 	}
-	return fetchGitHubReleasesDirect(perPage)
+
+	releases, err := fetchGitHubReleases(perPage)
+	if err == nil {
+		return releases, nil
+	}
+	if proxyErr != nil {
+		return nil, fmt.Errorf("GitHub代理发布源请求失败: %v; 直连回退失败: %w", proxyErr, err)
+	}
+	return nil, err
 }
 
 func resolveLatestReleaseByChannel(channel string) (string, error) {
