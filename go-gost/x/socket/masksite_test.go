@@ -117,3 +117,34 @@ func TestRunAcmeIssueCommandTreatsUnchangedCertificateAsSuccess(t *testing.T) {
 		t.Fatalf("expected unchanged certificate output to be accepted: %v", err)
 	}
 }
+
+func TestMaskAcmeEnvironmentUsesRootHomeAndCloudflareCredentials(t *testing.T) {
+	t.Setenv("HOME", "/")
+	t.Setenv("CF_Token", "stale-token")
+	env := maskAcmeEnvironment(maskSiteRequest{
+		CloudflareAPIToken: "new-token",
+		CloudflareZoneID:   "zone-id",
+	})
+
+	want := map[string]string{
+		"HOME":       maskRootHome,
+		"CF_Token":   "new-token",
+		"CF_Zone_ID": "zone-id",
+	}
+	counts := make(map[string]int)
+	for _, item := range env {
+		for key, value := range want {
+			if strings.HasPrefix(item, key+"=") {
+				counts[key]++
+				if item != key+"="+value {
+					t.Fatalf("%s = %q, want %q", key, item, key+"="+value)
+				}
+			}
+		}
+	}
+	for key := range want {
+		if counts[key] != 1 {
+			t.Fatalf("%s appears %d times in command environment, want 1", key, counts[key])
+		}
+	}
+}

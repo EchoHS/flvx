@@ -402,6 +402,7 @@ After=network.target
 [Service]
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/flux_agent
+Environment=HOME=/root
 Restart=on-failure
 StandardOutput=null
 StandardError=null

@@ -21,6 +21,8 @@ const (
 	maskNginxEnabled    = "/etc/nginx/sites-enabled/flvx-mask.conf"
 	maskDefaultSiteRepo = "https://github.com/EchoHS/anime.js.git"
 	maskDefaultSiteDir  = "/var/www/flvx-mask-site"
+	maskRootHome        = "/root"
+	maskAcmeScript      = "/root/.acme.sh/acme.sh"
 )
 
 type maskSiteRequest struct {
@@ -193,14 +195,28 @@ func prepareMaskSite(req maskSiteRequest) error {
 }
 
 func ensureAcme(req maskSiteRequest) error {
-	acme := "/root/.acme.sh/acme.sh"
+	acme := maskAcmeScript
+	acmeEnv := maskAcmeEnvironment(req)
 	if _, err := os.Stat(acme); err != nil {
 		installer := filepath.Join(os.TempDir(), "flvx-acme-install.sh")
 		if err := runCommand("curl", "-fsSL", "https://get.acme.sh", "-o", installer); err != nil {
 			return err
 		}
-		if err := runCommand("sh", installer, "email="+defaultACMEEmail(req.ACMEEmail)); err != nil {
+		defer os.Remove(installer)
+		if err := runCommandEnv(acmeEnv, "sh", installer, "email="+defaultACMEEmail(req.ACMEEmail)); err != nil {
 			return err
+		}
+	}
+	info, err := os.Stat(acme)
+	if err != nil {
+		return fmt.Errorf("acme.sh installation did not create %s with HOME=%s: %w", acme, maskRootHome, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("acme.sh path is a directory: %s", acme)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		if err := os.Chmod(acme, info.Mode().Perm()|0700); err != nil {
+			return fmt.Errorf("make acme.sh executable: %w", err)
 		}
 	}
 	certDir := filepath.Join("/etc/nginx/ssl", req.Domain)
@@ -208,11 +224,7 @@ func ensureAcme(req maskSiteRequest) error {
 		return err
 	}
 	if strings.TrimSpace(req.CloudflareAPIToken) != "" {
-		env := append(os.Environ(), "CF_Token="+req.CloudflareAPIToken)
-		if strings.TrimSpace(req.CloudflareZoneID) != "" {
-			env = append(env, "CF_Zone_ID="+req.CloudflareZoneID)
-		}
-		if err := runAcmeIssueCommand(env, acme, "--issue", "--dns", "dns_cf", "-d", req.Domain, "--keylength", "ec-256", "--server", "letsencrypt"); err != nil {
+		if err := runAcmeIssueCommand(acmeEnv, acme, "--issue", "--dns", "dns_cf", "-d", req.Domain, "--keylength", "ec-256", "--server", "letsencrypt"); err != nil {
 			return err
 		}
 	} else {
@@ -222,14 +234,36 @@ func ensureAcme(req maskSiteRequest) error {
 		if err := runCommand("systemctl", "reload", "nginx"); err != nil {
 			return err
 		}
-		if err := runAcmeIssueCommand(nil, acme, "--issue", "-d", req.Domain, "-w", req.SiteDir, "--keylength", "ec-256", "--server", "letsencrypt"); err != nil {
+		if err := runAcmeIssueCommand(acmeEnv, acme, "--issue", "-d", req.Domain, "-w", req.SiteDir, "--keylength", "ec-256", "--server", "letsencrypt"); err != nil {
 			return err
 		}
 	}
-	return runCommand(acme, "--install-cert", "-d", req.Domain, "--ecc",
+	return runCommandEnv(acmeEnv, acme, "--install-cert", "-d", req.Domain, "--ecc",
 		"--fullchain-file", filepath.Join(certDir, "fullchain.pem"),
 		"--key-file", filepath.Join(certDir, "privkey.pem"),
 		"--reloadcmd", "systemctl reload nginx")
+}
+
+func maskAcmeEnvironment(req maskSiteRequest) []string {
+	env := setCommandEnvironment(os.Environ(), "HOME", maskRootHome)
+	if token := strings.TrimSpace(req.CloudflareAPIToken); token != "" {
+		env = setCommandEnvironment(env, "CF_Token", token)
+	}
+	if zoneID := strings.TrimSpace(req.CloudflareZoneID); zoneID != "" {
+		env = setCommandEnvironment(env, "CF_Zone_ID", zoneID)
+	}
+	return env
+}
+
+func setCommandEnvironment(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		if !strings.HasPrefix(item, prefix) {
+			out = append(out, item)
+		}
+	}
+	return append(out, prefix+value)
 }
 
 func writeHTTPOnlyNginx(req maskSiteRequest) error {
