@@ -69,6 +69,7 @@ import {
   getNodeList,
   pauseForwardService,
   resumeForwardService,
+  resetForwardFlow,
   diagnoseForward,
   updateForwardOrder,
   getConfigByName,
@@ -130,6 +131,8 @@ interface Forward {
   ipSpeedId?: number | null;
   ipSpeedLimitName?: string;
   proxyProtocol?: number;
+  proxyProtocolReceive?: number;
+  proxyProtocolSend?: number;
 }
 
 interface Tunnel {
@@ -169,6 +172,8 @@ interface ForwardForm {
   ipSpeedId: number | null;
   maxConn?: number;
   proxyProtocol?: number;
+  proxyProtocolReceive?: number;
+  proxyProtocolSend?: number;
 }
 
 interface ForwardUserGroup {
@@ -226,7 +231,7 @@ const FORWARD_GROUPED_TABLE_COLUMN_CLASS = {
   strategy: "w-[100px]",
   totalFlow: "w-[120px]",
   status: "w-[100px]",
-  actions: "w-[144px] text-right",
+  actions: "w-[176px] text-right",
 } as const;
 
 const normalizeForwardUserName = (userName?: string): string => {
@@ -600,6 +605,16 @@ const mapForwardApiItems = (items: ForwardApiItem[]): Forward[] => {
       typeof forward.proxyProtocol === "number"
         ? forward.proxyProtocol
         : undefined,
+    proxyProtocolReceive:
+      typeof forward.proxyProtocolReceive === "number"
+        ? forward.proxyProtocolReceive
+        : 0,
+    proxyProtocolSend:
+      typeof forward.proxyProtocolSend === "number"
+        ? forward.proxyProtocolSend
+        : typeof forward.proxyProtocol === "number"
+          ? forward.proxyProtocol
+          : 0,
     serviceRunning: forward.status === 1,
   }));
 };
@@ -750,6 +765,7 @@ const SortableTableRow = ({
   handleEdit,
   handleDelete,
   handleDiagnose,
+  handleResetFlow,
   showAddressModal,
   formatFlow,
 }: any) => {
@@ -907,6 +923,29 @@ const SortableTableRow = ({
           </Button>
           <Button
             isIconOnly
+            className="bg-secondary/10 text-secondary hover:bg-secondary/20"
+            isDisabled={(forward.inFlow || 0) + (forward.outFlow || 0) <= 0}
+            size="sm"
+            title="流量清零"
+            onPress={() => handleResetFlow(forward)}
+          >
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-13.657-3.657L4 8m16 8-2.343 2.657A8 8 0 014 15"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+              />
+            </svg>
+          </Button>
+          <Button
+            isIconOnly
             className="bg-danger/10 text-danger hover:bg-danger/20"
             size="sm"
             title="删除"
@@ -944,6 +983,7 @@ const SortableCompactTableRow = ({
   handleEdit,
   handleDelete,
   handleDiagnose,
+  handleResetFlow,
   showAddressModal,
   hasMultipleAddresses,
   formatFlow,
@@ -1132,6 +1172,29 @@ const SortableCompactTableRow = ({
           </Button>
           <Button
             isIconOnly
+            className="bg-secondary/10 text-secondary hover:bg-secondary/20"
+            isDisabled={(forward.inFlow || 0) + (forward.outFlow || 0) <= 0}
+            size="sm"
+            title="流量清零"
+            onPress={() => handleResetFlow(forward)}
+          >
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-13.657-3.657L4 8m16 8-2.343 2.657A8 8 0 014 15"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+              />
+            </svg>
+          </Button>
+          <Button
+            isIconOnly
             className="bg-danger/10 text-danger hover:bg-danger/20"
             size="sm"
             onPress={() => handleDelete(forward)}
@@ -1275,13 +1338,18 @@ export default function ForwardPage() {
   const [modalOpen, setModalOpen] = useState(false);
   // isFilterModalOpen removed
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [resetFlowModalOpen, setResetFlowModalOpen] = useState(false);
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const [diagnosisModalOpen, setDiagnosisModalOpen] = useState(false);
   const [isEdit, setIsEdit] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [resetFlowLoading, setResetFlowLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
   const [forwardToDelete, setForwardToDelete] = useState<Forward | null>(null);
+  const [forwardToResetFlow, setForwardToResetFlow] = useState<Forward | null>(
+    null,
+  );
   const [currentDiagnosisForward, setCurrentDiagnosisForward] =
     useState<Forward | null>(null);
   const [diagnosisResult, setDiagnosisResult] =
@@ -1337,6 +1405,8 @@ export default function ForwardPage() {
     ipSpeedId: null,
     maxConn: 0,
     proxyProtocol: 0,
+    proxyProtocolReceive: 0,
+    proxyProtocolSend: 0,
   });
   const [inIpTouched, setInIpTouched] = useState(false);
 
@@ -2128,6 +2198,8 @@ export default function ForwardPage() {
       ipMaxConn: 0,
       ipSpeedId: null,
       proxyProtocol: 0,
+      proxyProtocolReceive: 0,
+      proxyProtocolSend: 0,
     });
     setErrors({});
     setModalOpen(true);
@@ -2152,6 +2224,9 @@ export default function ForwardPage() {
       ipSpeedId: normalizeSpeedId(forward.ipSpeedId),
       maxConn: forward.maxConn ?? 0,
       proxyProtocol: forward.proxyProtocol ?? 0,
+      proxyProtocolReceive: forward.proxyProtocolReceive ?? 0,
+      proxyProtocolSend:
+        forward.proxyProtocolSend ?? forward.proxyProtocol ?? 0,
     });
     setErrors({});
     setModalOpen(true);
@@ -2161,6 +2236,46 @@ export default function ForwardPage() {
   const handleDelete = (forward: Forward) => {
     setForwardToDelete(forward);
     setDeleteModalOpen(true);
+  };
+
+  const handleResetFlow = (forward: Forward) => {
+    if ((forward.inFlow || 0) + (forward.outFlow || 0) <= 0) return;
+
+    setForwardToResetFlow(forward);
+    setResetFlowModalOpen(true);
+  };
+
+  const handleResetFlowModalOpenChange = (isOpen: boolean) => {
+    if (resetFlowLoading) return;
+
+    setResetFlowModalOpen(isOpen);
+    if (!isOpen) {
+      setForwardToResetFlow(null);
+    }
+  };
+
+  const confirmResetFlow = async () => {
+    if (!forwardToResetFlow) return;
+
+    setResetFlowLoading(true);
+    try {
+      const res = await resetForwardFlow(forwardToResetFlow.id);
+
+      if (res.code !== 0) {
+        toast.error(res.msg || "流量清零失败");
+
+        return;
+      }
+
+      toast.success("规则流量已清零");
+      setResetFlowModalOpen(false);
+      setForwardToResetFlow(null);
+      await refreshForwardList(false);
+    } catch {
+      toast.error("流量清零失败");
+    } finally {
+      setResetFlowLoading(false);
+    }
   };
 
   // 确认删除规则
@@ -2285,7 +2400,9 @@ export default function ForwardPage() {
           ipMaxConn: form.ipMaxConn,
           ...(isAdmin ? { ipSpeedId: normalizedIPSpeedId } : {}),
           maxConn: form.maxConn,
-          proxyProtocol: form.proxyProtocol,
+          proxyProtocol: form.proxyProtocolSend,
+          proxyProtocolReceive: form.proxyProtocolReceive,
+          proxyProtocolSend: form.proxyProtocolSend,
         };
 
         res = await updateForward(updateData);
@@ -2301,7 +2418,9 @@ export default function ForwardPage() {
           ipMaxConn: form.ipMaxConn,
           ...(isAdmin ? { ipSpeedId: normalizedIPSpeedId } : {}),
           maxConn: form.maxConn,
-          proxyProtocol: form.proxyProtocol,
+          proxyProtocol: form.proxyProtocolSend,
+          proxyProtocolReceive: form.proxyProtocolReceive,
+          proxyProtocolSend: form.proxyProtocolSend,
         };
 
         res = await createForward(createData);
@@ -3933,7 +4052,7 @@ export default function ForwardPage() {
             </div>
           </div>
 
-          <div className="flex gap-1.5 mt-3">
+          <div className="grid grid-cols-2 gap-1.5 mt-3">
             <Button
               className="flex-1 min-h-8"
               color="primary"
@@ -3975,6 +4094,32 @@ export default function ForwardPage() {
               onPress={() => handleDiagnose(forward)}
             >
               诊断
+            </Button>
+            <Button
+              className="flex-1 min-h-8"
+              color="secondary"
+              isDisabled={(forward.inFlow || 0) + (forward.outFlow || 0) <= 0}
+              size="sm"
+              startContent={
+                <svg
+                  aria-hidden="true"
+                  className="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-13.657-3.657L4 8m16 8-2.343 2.657A8 8 0 014 15"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                  />
+                </svg>
+              }
+              variant="flat"
+              onPress={() => handleResetFlow(forward)}
+            >
+              清零
             </Button>
             <Button
               className="flex-1 min-h-8"
@@ -4278,7 +4423,7 @@ export default function ForwardPage() {
                         <TableColumn className="w-[80px]">策略</TableColumn>
                         <TableColumn className="w-[100px]">用量</TableColumn>
                         <TableColumn className="w-[80px]">状态</TableColumn>
-                        <TableColumn align="left" className="w-[120px] pl-4">
+                        <TableColumn align="left" className="w-[160px] pl-4">
                           操作
                         </TableColumn>
                       </TableHeader>
@@ -4297,6 +4442,7 @@ export default function ForwardPage() {
                             handleDelete={handleDelete}
                             handleDiagnose={handleDiagnose}
                             handleEdit={handleEdit}
+                            handleResetFlow={handleResetFlow}
                             handleServiceToggle={handleServiceToggle}
                             hasMultipleAddresses={hasMultipleAddresses}
                             selectMode={selectMode}
@@ -4592,6 +4738,7 @@ export default function ForwardPage() {
                                           handleDelete={handleDelete}
                                           handleDiagnose={handleDiagnose}
                                           handleEdit={handleEdit}
+                                          handleResetFlow={handleResetFlow}
                                           handleServiceToggle={
                                             handleServiceToggle
                                           }
@@ -4968,25 +5115,50 @@ export default function ForwardPage() {
                             setForm((prev) => ({ ...prev, ipMaxConn: value }));
                           }}
                         />
-                        <Select
-                          description="启用 PROXY protocol，用于透传客户端真实 IP"
-                          label="Proxy Protocol"
-                          placeholder="禁用"
-                          selectedKeys={[String(form.proxyProtocol || 0)]}
-                          variant="bordered"
-                          onSelectionChange={(keys) => {
-                            const selectedKey = Array.from(keys)[0] as string;
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <Select
+                            description="入口监听接收 PROXY protocol，用于读取上游传入的真实客户端 IP。"
+                            label="Proxy Protocol 接收"
+                            placeholder="禁用"
+                            selectedKeys={[
+                              String(form.proxyProtocolReceive || 0),
+                            ]}
+                            variant="bordered"
+                            onSelectionChange={(keys) => {
+                              const selectedKey = Array.from(keys)[0] as string;
 
-                            setForm((prev) => ({
-                              ...prev,
-                              proxyProtocol: Number(selectedKey),
-                            }));
-                          }}
-                        >
-                          <SelectItem key="0">禁用</SelectItem>
-                          <SelectItem key="1">Version 1</SelectItem>
-                          <SelectItem key="2">Version 2</SelectItem>
-                        </Select>
+                              setForm((prev) => ({
+                                ...prev,
+                                proxyProtocolReceive: Number(selectedKey),
+                              }));
+                            }}
+                          >
+                            <SelectItem key="0">禁用</SelectItem>
+                            <SelectItem key="1">Version 1</SelectItem>
+                            <SelectItem key="2">Version 2</SelectItem>
+                          </Select>
+                          <Select
+                            description="连接目标地址时发送 PROXY protocol，用于向下游透传客户端真实 IP。"
+                            label="Proxy Protocol 发送"
+                            placeholder="禁用"
+                            selectedKeys={[String(form.proxyProtocolSend || 0)]}
+                            variant="bordered"
+                            onSelectionChange={(keys) => {
+                              const selectedKey = Array.from(keys)[0] as string;
+                              const proxyProtocolSend = Number(selectedKey);
+
+                              setForm((prev) => ({
+                                ...prev,
+                                proxyProtocol: proxyProtocolSend,
+                                proxyProtocolSend,
+                              }));
+                            }}
+                          >
+                            <SelectItem key="0">禁用</SelectItem>
+                            <SelectItem key="1">Version 1</SelectItem>
+                            <SelectItem key="2">Version 2</SelectItem>
+                          </Select>
+                        </div>
                         {isAdmin && (
                           <Select
                             label="规则限速"
@@ -5116,6 +5288,59 @@ export default function ForwardPage() {
                   onPress={confirmDelete}
                 >
                   确认删除
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
+
+      {/* 规则流量清零确认模态框 */}
+      <Modal
+        backdrop="blur"
+        classNames={{
+          base: "!w-[calc(100%-32px)] !mx-auto sm:!w-full rounded-2xl overflow-hidden",
+        }}
+        isOpen={resetFlowModalOpen}
+        placement="center"
+        scrollBehavior="inside"
+        size="lg"
+        onOpenChange={handleResetFlowModalOpenChange}
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader className="flex flex-col gap-1">
+                <h2 className="text-lg font-bold text-secondary">
+                  确认流量清零
+                </h2>
+              </ModalHeader>
+              <ModalBody>
+                <p className="text-default-600">
+                  确定要清零规则{" "}
+                  <span className="font-semibold text-foreground">
+                    &quot;{forwardToResetFlow?.name}&quot;
+                  </span>{" "}
+                  当前显示的上传和下载流量吗？
+                </p>
+                <p className="text-small text-default-500 mt-2">
+                  此操作不可撤销，但不会影响用户总流量、用户隧道配额和历史统计。
+                </p>
+              </ModalBody>
+              <ModalFooter>
+                <Button
+                  isDisabled={resetFlowLoading}
+                  variant="light"
+                  onPress={onClose}
+                >
+                  取消
+                </Button>
+                <Button
+                  color="secondary"
+                  isLoading={resetFlowLoading}
+                  onPress={confirmResetFlow}
+                >
+                  确认清零
                 </Button>
               </ModalFooter>
             </>

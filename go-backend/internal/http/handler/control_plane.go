@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go-backend/internal/http/client"
+	runtimenft "go-backend/internal/runtime/nftables"
 	"go-backend/internal/store/model"
 	"go-backend/internal/ws"
 )
@@ -772,6 +773,9 @@ func (h *Handler) diagnoseForwardRuntime(ctx context.Context, forward *forwardRe
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if payload, handled, err := h.diagnoseNftablesForwardRuntime(forward); handled || err != nil {
+		return payload, err
+	}
 	forwardName, workItems, err := h.prepareForwardDiagnosis(forward)
 	if err != nil {
 		return nil, err
@@ -785,6 +789,111 @@ func (h *Handler) diagnoseForwardRuntime(ctx context.Context, forward *forwardRe
 		"results":     results,
 	}
 	return payload, nil
+}
+
+func (h *Handler) diagnoseNftablesForwardRuntime(forward *forwardRecord) (map[string]interface{}, bool, error) {
+	if forward == nil {
+		return nil, false, errForwardNotFound
+	}
+	nftMode, entryNodeIDs, err := h.tunnelUsesNftables(forward.TunnelID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !nftMode {
+		return nil, false, nil
+	}
+	if len(entryNodeIDs) == 0 {
+		return nil, true, errors.New("nftables 转发缺少入口节点")
+	}
+	targets, err := resolveDiagnosisTargets(forward.RemoteAddr)
+	if err != nil {
+		return nil, true, err
+	}
+	results, err := h.buildNftablesForwardDiagnosisResults(forward, entryNodeIDs[0], targets)
+	if err != nil {
+		return nil, true, err
+	}
+	payload := map[string]interface{}{
+		"forwardName": forward.Name,
+		"timestamp":   time.Now().UnixMilli(),
+		"results":     results,
+	}
+	return payload, true, nil
+}
+
+func (h *Handler) buildNftablesForwardDiagnosisResults(forward *forwardRecord, nodeID int64, targets []diagnosisTarget) ([]map[string]interface{}, error) {
+	if h == nil || h.repo == nil {
+		return nil, errors.New("handler not initialized")
+	}
+	node, err := h.getNodeRecord(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	bindings, err := h.repo.ListNftRuleBindingsByNode(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	var binding *model.NftRuleBinding
+	for i := range bindings {
+		if bindings[i].ForwardID == forward.ID {
+			binding = &bindings[i]
+			break
+		}
+	}
+	target := diagnosisTarget{}
+	if len(targets) > 0 {
+		target = targets[0]
+	}
+
+	status := "missing"
+	message := "nftables 规则未下发"
+	success := false
+	inPort := 0
+	protocols := ""
+	targetAddr := strings.TrimSpace(forward.RemoteAddr)
+	ruleHash := ""
+	if binding != nil {
+		status = strings.ToLower(strings.TrimSpace(binding.Status))
+		inPort = binding.InPort
+		protocols = strings.TrimSpace(binding.Protocols)
+		targetAddr = strings.TrimSpace(binding.TargetAddr)
+		ruleHash = strings.TrimSpace(binding.RuleHash)
+		if status == "" {
+			status = "pending"
+		}
+		if status == runtimenft.StatusApplied {
+			success = true
+			message = "nftables 规则已下发"
+		} else if strings.TrimSpace(binding.LastError) != "" {
+			message = binding.LastError
+		} else {
+			message = "nftables 规则未完成下发"
+		}
+	}
+
+	packetLoss := 100
+	if success {
+		packetLoss = 0
+	}
+	result := map[string]interface{}{
+		"success":       success,
+		"nodeName":      node.Name,
+		"nodeId":        strconv.FormatInt(nodeID, 10),
+		"targetIp":      target.IP,
+		"targetPort":    target.Port,
+		"description":   fmt.Sprintf("nftables规则(%s)->目标(%s)", node.Name, defaultString(target.Address, targetAddr)),
+		"averageTime":   0,
+		"packetLoss":    packetLoss,
+		"message":       message,
+		"fromChainType": 1,
+		"forwardMode":   "nftables",
+		"nftRuleStatus": status,
+		"nftRuleHash":   ruleHash,
+		"inPort":        inPort,
+		"protocols":     protocols,
+		"targetAddr":    targetAddr,
+	}
+	return []map[string]interface{}{result}, nil
 }
 
 func (h *Handler) prepareForwardDiagnosis(forward *forwardRecord) (string, []diagnosisWorkItem, error) {
@@ -1757,6 +1866,7 @@ func buildForwardServiceConfigs(baseName string, forward *forwardRecord, tunnel 
 	services := make([]map[string]interface{}, 0, 2)
 	targets := splitRemoteTargets(forward.RemoteAddr)
 	strategy := strings.TrimSpace(forward.Strategy)
+	proxyProtocolReceive, proxyProtocolSend := normalizeForwardProxyProtocol(forward.ProxyProtocol, forward.ProxyProtocolReceive, forward.ProxyProtocolSend)
 	if strategy == "" {
 		strategy = "fifo"
 	}
@@ -1801,12 +1911,16 @@ func buildForwardServiceConfigs(baseName string, forward *forwardRecord, tunnel 
 		if runtimeLimiters.TrafficLimiter != "" {
 			service["limiter"] = runtimeLimiters.TrafficLimiter
 		}
-		if forward.ProxyProtocol > 0 {
+		if proxyProtocolReceive > 0 {
+			serviceMetadata := ensureServiceMetadata(service)
+			serviceMetadata["proxyProtocol"] = proxyProtocolReceive
+		}
+		if proxyProtocolSend > 0 {
 			handlerConfig := service["handler"].(map[string]interface{})
 			if handlerConfig["metadata"] == nil {
 				handlerConfig["metadata"] = map[string]interface{}{}
 			}
-			handlerConfig["metadata"].(map[string]interface{})["proxyProtocol"] = forward.ProxyProtocol
+			handlerConfig["metadata"].(map[string]interface{})["proxyProtocol"] = proxyProtocolSend
 		}
 		if protocol == "udp" {
 			listenerMetadata := map[string]interface{}{
@@ -1819,10 +1933,8 @@ func buildForwardServiceConfigs(baseName string, forward *forwardRecord, tunnel 
 			service["handler"].(map[string]interface{})["chain"] = fmt.Sprintf("chains_%d", forward.TunnelID)
 		}
 		if tunnel != nil && tunnel.Type == 1 && strings.TrimSpace(node.InterfaceName) != "" {
-			if service["metadata"] == nil {
-				service["metadata"] = map[string]interface{}{}
-			}
-			service["metadata"].(map[string]interface{})["interface"] = node.InterfaceName
+			serviceMetadata := ensureServiceMetadata(service)
+			serviceMetadata["interface"] = node.InterfaceName
 		}
 		services = append(services, service)
 	}
@@ -1839,6 +1951,25 @@ func buildForwarderNodes(targets []string) []map[string]interface{} {
 		})
 	}
 	return nodes
+}
+
+func ensureServiceMetadata(service map[string]interface{}) map[string]interface{} {
+	if service["metadata"] == nil {
+		service["metadata"] = map[string]interface{}{}
+	}
+	metadata, ok := service["metadata"].(map[string]interface{})
+	if !ok {
+		metadata = map[string]interface{}{}
+		service["metadata"] = metadata
+	}
+	return metadata
+}
+
+func normalizeForwardProxyProtocol(legacy, receive, send int) (int, int) {
+	if send == 0 && legacy > 0 {
+		send = legacy
+	}
+	return receive, send
 }
 
 func processServerAddress(serverAddr string) string {

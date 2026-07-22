@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,114 @@ func TestNftablesNodeModeSSHConfigAndBindingPersistence(t *testing.T) {
 	}
 	if len(bindings) != 0 {
 		t.Fatalf("expected no bindings after delete, got %+v", bindings)
+	}
+}
+
+func TestNftablesNodeSSHConfigSurvivesRepositoryReopen(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  NftSSHConfigInput
+	}{
+		{
+			name: "password",
+			cfg: NftSSHConfigInput{
+				Host:       "203.0.113.10",
+				Port:       2222,
+				Username:   "root",
+				AuthType:   "password",
+				Password:   "ssh-password",
+				Passphrase: "key-passphrase",
+				SudoMode:   "sudo",
+			},
+		},
+		{
+			name: "private-key",
+			cfg: NftSSHConfigInput{
+				Host:       "203.0.113.11",
+				Port:       2223,
+				Username:   "admin",
+				AuthType:   "private_key",
+				PrivateKey: "PRIVATE-KEY-SHOULD-PERSIST",
+				Passphrase: "key-passphrase",
+				SudoMode:   "sudo_su",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "nftables-ssh.sqlite")
+			r, err := Open(dbPath)
+			if err != nil {
+				t.Fatalf("open repo: %v", err)
+			}
+
+			now := time.Now().UnixMilli()
+			if err := r.CreateNode(
+				"nft-node",
+				"secret",
+				tt.cfg.Host,
+				nil,
+				nil,
+				"10000-20000",
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				0,
+				0,
+				0,
+				now,
+				1,
+				"[::]",
+				"[::]",
+				1,
+				0,
+				nil,
+				nil,
+				nil,
+				nil,
+				"nftables",
+			); err != nil {
+				t.Fatalf("CreateNode: %v", err)
+			}
+
+			nodes, err := r.ListNodes()
+			if err != nil {
+				t.Fatalf("ListNodes: %v", err)
+			}
+			nodeID := nodes[0]["id"].(int64)
+			if err := r.UpsertNodeSSHConfig(nodeID, tt.cfg, now); err != nil {
+				t.Fatalf("UpsertNodeSSHConfig: %v", err)
+			}
+			if err := r.Close(); err != nil {
+				t.Fatalf("close repo: %v", err)
+			}
+
+			reopened, err := Open(dbPath)
+			if err != nil {
+				t.Fatalf("reopen repo: %v", err)
+			}
+			defer reopened.Close()
+
+			loaded, err := reopened.GetNodeSSHConfig(nodeID)
+			if err != nil {
+				t.Fatalf("GetNodeSSHConfig after reopen: %v", err)
+			}
+			if loaded.Host != tt.cfg.Host || loaded.Port != tt.cfg.Port || loaded.Username != tt.cfg.Username || loaded.AuthType != tt.cfg.AuthType || loaded.SudoMode != tt.cfg.SudoMode {
+				t.Fatalf("unexpected ssh config after reopen: %+v", loaded)
+			}
+			if tt.cfg.Password != "" && (!loaded.Password.Valid || loaded.Password.String != tt.cfg.Password) {
+				t.Fatalf("expected password to persist after reopen, got %+v", loaded.Password)
+			}
+			if tt.cfg.PrivateKey != "" && (!loaded.PrivateKey.Valid || loaded.PrivateKey.String != tt.cfg.PrivateKey) {
+				t.Fatalf("expected private key to persist after reopen, got %+v", loaded.PrivateKey)
+			}
+			if tt.cfg.Passphrase != "" && (!loaded.Passphrase.Valid || loaded.Passphrase.String != tt.cfg.Passphrase) {
+				t.Fatalf("expected passphrase to persist after reopen, got %+v", loaded.Passphrase)
+			}
+		})
 	}
 }
 

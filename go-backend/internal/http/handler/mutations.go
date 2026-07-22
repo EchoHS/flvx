@@ -417,6 +417,12 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 	newHTTP := asInt(req["http"], currentHTTP)
 	newTLS := asInt(req["tls"], currentTLS)
 	newSocks := asInt(req["socks"], currentSocks)
+	forwardMode := defaultNodeForwardMode(strings.TrimSpace(asString(req["forwardMode"])))
+	currentForwardMode, err := h.repo.GetNodeForwardMode(id)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
 	serverIP := asString(req["serverIp"])
 	if serverIP != "" {
 		if err := IsValidNodeAddress(serverIP); err != nil {
@@ -424,7 +430,8 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if currentStatus == 1 && (newHTTP != currentHTTP || newTLS != currentTLS || newSocks != currentSocks) {
+	usesNftablesRuntime := forwardMode == "nftables" || defaultNodeForwardMode(currentForwardMode) == "nftables"
+	if currentStatus == 1 && !usesNftablesRuntime && (newHTTP != currentHTTP || newTLS != currentTLS || newSocks != currentSocks) {
 		if err := h.applyNodeProtocolChange(id, newHTTP, newTLS, newSocks); err != nil {
 			response.WriteJSON(w, response.ErrDefault(err.Error()))
 			return
@@ -432,7 +439,6 @@ func (h *Handler) nodeUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UnixMilli()
-	forwardMode := defaultNodeForwardMode(strings.TrimSpace(asString(req["forwardMode"])))
 	if err := h.repo.UpdateNode(id,
 		asString(req["name"]),
 		serverIP,
@@ -2190,8 +2196,10 @@ func (h *Handler) forwardCreate(w http.ResponseWriter, r *http.Request) {
 		ipMaxConn = 0
 	}
 	proxyProtocol := asInt(req["proxyProtocol"], 0)
+	proxyProtocolReceive := asInt(req["proxyProtocolReceive"], 0)
+	proxyProtocolSend := asInt(req["proxyProtocolSend"], proxyProtocol)
 
-	forwardID, err := h.repo.CreateForwardTx(userID, userName, name, tunnelID, remoteAddr, defaultString(asString(req["strategy"]), "fifo"), now, inx, entryNodes, port, inIp, nullableInt(speedID), maxConn, ipMaxConn, nullableInt(ipSpeedID), proxyProtocol)
+	forwardID, err := h.repo.CreateForwardTx(userID, userName, name, tunnelID, remoteAddr, defaultString(asString(req["strategy"]), "fifo"), now, inx, entryNodes, port, inIp, nullableInt(speedID), maxConn, ipMaxConn, nullableInt(ipSpeedID), proxyProtocol, proxyProtocolReceive, proxyProtocolSend)
 	if err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
@@ -2380,8 +2388,10 @@ func (h *Handler) forwardUpdate(w http.ResponseWriter, r *http.Request) {
 		ipMaxConn = 0
 	}
 	proxyProtocol := asInt(req["proxyProtocol"], forward.ProxyProtocol)
+	proxyProtocolReceive := asInt(req["proxyProtocolReceive"], forward.ProxyProtocolReceive)
+	proxyProtocolSend := asInt(req["proxyProtocolSend"], forward.ProxyProtocolSend)
 
-	if err := h.repo.UpdateForward(id, name, tunnelID, remoteAddr, strategy, now, newSpeedID, maxConn, ipMaxConn, newIPSpeedID, proxyProtocol); err != nil {
+	if err := h.repo.UpdateForward(id, name, tunnelID, remoteAddr, strategy, now, newSpeedID, maxConn, ipMaxConn, newIPSpeedID, proxyProtocol, proxyProtocolReceive, proxyProtocolSend); err != nil {
 		response.WriteJSON(w, response.Err(-2, err.Error()))
 		return
 	}
@@ -2536,6 +2546,26 @@ func (h *Handler) forwardPause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.repo.UpdateForwardStatus(id, 0, time.Now().UnixMilli())
+	response.WriteJSON(w, response.OKEmpty())
+}
+
+func (h *Handler) forwardResetFlow(w http.ResponseWriter, r *http.Request) {
+	id := idFromBody(r, w)
+	if id <= 0 {
+		return
+	}
+	if _, _, _, err := h.resolveForwardAccess(r, id); err != nil {
+		if errors.Is(err, errForwardNotFound) {
+			response.WriteJSON(w, response.ErrDefault("转发不存在"))
+			return
+		}
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
+	if err := h.repo.ResetForwardFlow(id, time.Now().UnixMilli()); err != nil {
+		response.WriteJSON(w, response.Err(-2, err.Error()))
+		return
+	}
 	response.WriteJSON(w, response.OKEmpty())
 }
 
@@ -5037,7 +5067,7 @@ func (h *Handler) rollbackForwardMutation(oldForward *forwardRecord, oldPorts []
 	h.repo.RollbackForwardFields(
 		oldForward.ID, oldForward.UserID, oldForward.UserName, oldForward.Name,
 		oldForward.TunnelID, oldForward.RemoteAddr, oldForward.Strategy, oldForward.Status,
-		oldForward.SpeedID, oldForward.MaxConn, oldForward.IPMaxConn, oldForward.IPSpeedID, oldForward.ProxyProtocol,
+		oldForward.SpeedID, oldForward.MaxConn, oldForward.IPMaxConn, oldForward.IPSpeedID, oldForward.ProxyProtocol, oldForward.ProxyProtocolReceive, oldForward.ProxyProtocolSend,
 		time.Now().UnixMilli(),
 	)
 

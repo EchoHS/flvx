@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 )
 
 type fakeNftablesManager struct {
+	mu             sync.Mutex
 	testErr        error
 	reconcileErr   error
 	reconcileHit   int
@@ -33,11 +35,15 @@ type fakeNftablesManager struct {
 }
 
 func (f *fakeNftablesManager) Test(_ context.Context, cfg runtimenft.SSHConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastConfig = cfg
 	return f.testErr
 }
 
 func (f *fakeNftablesManager) Reconcile(_ context.Context, cfg runtimenft.SSHConfig, plan runtimenft.NodePlan) (runtimenft.ApplyResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.reconcileHit++
 	f.lastConfig = cfg
 	f.lastPlan = plan
@@ -47,22 +53,38 @@ func (f *fakeNftablesManager) Reconcile(_ context.Context, cfg runtimenft.SSHCon
 	return runtimenft.ApplyResult{
 		NodeID: plan.NodeID,
 		Script: "table inet flvx {}",
-		Hashes: map[int64]string{plan.NodeID: "hash"},
+		Hashes: runtimenft.PlanHashes(plan),
 	}, nil
 }
 
 func (f *fakeNftablesManager) Clear(context.Context, runtimenft.SSHConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.clearHit++
 	return f.clearErr
 }
 
 func (f *fakeNftablesManager) CollectCounters(_ context.Context, cfg runtimenft.SSHConfig) ([]runtimenft.CounterSample, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.collectHit++
 	f.lastConfig = cfg
 	if f.collectErr != nil {
 		return nil, f.collectErr
 	}
 	return f.counterSamples, nil
+}
+
+func (f *fakeNftablesManager) reconcileCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reconcileHit
+}
+
+func (f *fakeNftablesManager) collectCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.collectHit
 }
 
 type nftablesTestFixture struct {
@@ -155,6 +177,49 @@ func TestNodeNftablesReconcileEndpointPersistsBindings(t *testing.T) {
 	}
 	if len(bindings) != 1 || bindings[0].ForwardID != forward.ID {
 		t.Fatalf("unexpected bindings: %+v", bindings)
+	}
+}
+
+func TestStartBackgroundJobsReconcilesNftablesRulesAtStartup(t *testing.T) {
+	fixture := setupNftablesHandler(t)
+	h := fixture.handler
+	seedNftablesSSHConfig(t, h, fixture.nodeID)
+	tunnelID := seedTunnelForNftables(t, h, "nft-startup-tunnel", fixture.nodeID)
+	seedForwardForNftables(t, h, tunnelID, fixture.nodeID, "203.0.113.9:8080")
+	manager := &fakeNftablesManager{}
+	h.nftablesManager = manager
+
+	h.StartBackgroundJobs()
+	t.Cleanup(h.StopBackgroundJobs)
+
+	waitForCondition(t, time.Second, func() bool {
+		return manager.reconcileCount() > 0
+	}, "nftables startup reconcile")
+}
+
+func TestStartBackgroundJobsCollectsNftablesTrafficImmediatelyAndUsesFastInterval(t *testing.T) {
+	fixture := setupNftablesCollectionFixture(t)
+	h := fixture.handler
+	manager := &fakeNftablesManager{counterSamples: []runtimenft.CounterSample{
+		{ForwardID: fixture.forwardID, Protocol: "tcp", Direction: runtimenft.CounterDirectionToTarget, Bytes: 1000, Packets: 10},
+	}}
+	h.nftablesManager = manager
+
+	oldInterval := nftablesTrafficCollectInterval
+	nftablesTrafficCollectInterval = 20 * time.Millisecond
+	t.Cleanup(func() { nftablesTrafficCollectInterval = oldInterval })
+
+	h.StartBackgroundJobs()
+	t.Cleanup(h.StopBackgroundJobs)
+
+	waitForCondition(t, time.Second, func() bool {
+		return manager.collectCount() >= 2
+	}, "immediate and repeated nftables traffic collection")
+}
+
+func TestNftablesTrafficCollectIntervalDefaultsToThirtySeconds(t *testing.T) {
+	if nftablesTrafficCollectInterval != 30*time.Second {
+		t.Fatalf("expected default nftables traffic collection interval 30s, got %s", nftablesTrafficCollectInterval)
 	}
 }
 
@@ -274,6 +339,41 @@ func TestNodeUpdatePreservesExistingNftablesSecretsWhenFieldsOmitted(t *testing.
 	}
 	if cfg.Host != "203.0.113.30" || cfg.Username != "admin" || cfg.AuthType != "password" {
 		t.Fatalf("unexpected ssh config after update: %+v", cfg)
+	}
+	if !cfg.Password.Valid || cfg.Password.String != "secret" {
+		t.Fatalf("expected password secret to be preserved, got %+v", cfg)
+	}
+}
+
+func TestNodeUpdateSkipsAgentProtocolCommandForNftablesNode(t *testing.T) {
+	fixture := setupNftablesHandler(t)
+	seedNftablesSSHConfig(t, fixture.handler, fixture.nodeID)
+
+	req := newAuthenticatedJSONRequest(t, map[string]interface{}{
+		"id":          fixture.nodeID,
+		"name":        "nft-node-updated",
+		"serverIp":    "198.51.100.10",
+		"serverIpV4":  "198.51.100.10",
+		"port":        "1000-65535",
+		"forwardMode": "nftables",
+		"http":        1,
+		"tls":         1,
+		"socks":       1,
+		"sshConfig": map[string]interface{}{
+			"host":     "203.0.113.30",
+			"port":     22,
+			"username": "admin",
+			"authType": "password",
+			"sudoMode": "none",
+		},
+	})
+	res := httptest.NewRecorder()
+	fixture.handler.nodeUpdate(res, req)
+	assertNftablesSuccessWithBody(t, res)
+
+	cfg, err := fixture.handler.repo.GetNodeSSHConfig(fixture.nodeID)
+	if err != nil {
+		t.Fatalf("load ssh config: %v", err)
 	}
 	if !cfg.Password.Valid || cfg.Password.String != "secret" {
 		t.Fatalf("expected password secret to be preserved, got %+v", cfg)
@@ -421,6 +521,61 @@ func TestTunnelBatchRedeployUsesNftablesReconcile(t *testing.T) {
 	}
 }
 
+func TestDiagnoseForwardRuntimeReturnsNftablesRuleStatus(t *testing.T) {
+	fixture := setupNftablesHandler(t)
+	h := fixture.handler
+	tunnelID := seedTunnelForNftables(t, h, "nft-diagnose-tunnel", fixture.nodeID)
+	forward := seedForwardForNftables(t, h, tunnelID, fixture.nodeID, "203.0.113.9:8080")
+	now := time.Now().UnixMilli()
+	if err := h.repo.UpsertNftRuleBinding(repo.NftRuleBindingInput{
+		ForwardID:  forward.ID,
+		NodeID:     fixture.nodeID,
+		InPort:     20000,
+		Protocols:  "tcp,udp",
+		TargetAddr: "203.0.113.9:8080",
+		RuleHash:   "hash-a",
+		Status:     runtimenft.StatusApplied,
+	}, now); err != nil {
+		t.Fatalf("seed nft binding: %v", err)
+	}
+
+	payload, err := h.diagnoseForwardRuntime(context.Background(), &forwardRecord{
+		ID:         forward.ID,
+		Name:       forward.Name,
+		TunnelID:   tunnelID,
+		RemoteAddr: "203.0.113.9:8080",
+	})
+	if err != nil {
+		t.Fatalf("diagnose forward: %v", err)
+	}
+	results, ok := payload["results"].([]map[string]interface{})
+	if !ok || len(results) != 1 {
+		t.Fatalf("expected one nftables diagnosis result, got %#v", payload["results"])
+	}
+	result := results[0]
+	if result["forwardMode"] != "nftables" || result["nftRuleStatus"] != runtimenft.StatusApplied {
+		t.Fatalf("expected nftables applied result, got %#v", result)
+	}
+	if result["success"] != true {
+		t.Fatalf("expected nftables diagnosis success, got %#v", result)
+	}
+	if !strings.Contains(asString(result["message"]), "已下发") {
+		t.Fatalf("expected applied message, got %#v", result["message"])
+	}
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool, description string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
+}
+
 func setupNftablesHandler(t *testing.T) nftablesTestFixture {
 	t.Helper()
 
@@ -490,7 +645,7 @@ func seedForwardForNftables(t *testing.T, h *Handler, tunnelID, nodeID int64, re
 	now := time.Now().UnixMilli()
 	forwardID, err := h.repo.CreateForwardTx(
 		1, "admin", "nft-forward", tunnelID, remoteAddr, "fifo", now, 1,
-		[]int64{nodeID}, 20000, "", nil, 0, 0, nil, 0,
+		[]int64{nodeID}, 20000, "", nil, 0, 0, nil, 0, 0, 0,
 	)
 	if err != nil {
 		t.Fatalf("create forward: %v", err)
