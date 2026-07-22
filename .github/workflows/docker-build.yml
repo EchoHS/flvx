@@ -444,11 +444,12 @@ jobs:
 
           echo "🔄 更新 Release ${VERSION} 中的 GOST 二进制文件..."
 
-          gh release upload "${VERSION}" ./artifacts/gost-amd64 --clobber
-          gh release upload "${VERSION}" ./artifacts/gost-arm64 --clobber
-
-          echo "📤 上传 GOST 校验文件..."
-          gh release upload "${VERSION}" ./artifacts/gost-amd64.sha256 --clobber
-          gh release upload "${VERSION}" ./artifacts/gost-arm64.sha256 --clobber
+          gh release upload "${VERSION}" \
+            ./artifacts/gost-amd64 \
+            ./artifacts/gost-arm64 \
+            ./artifacts/gost-amd64.sha256 \
+            ./artifacts/gost-arm64.sha256 \
+            --clobber \
+            --repo "${{ github.repository }}"
 
           echo "✅ GOST 二进制文件更新完成"
