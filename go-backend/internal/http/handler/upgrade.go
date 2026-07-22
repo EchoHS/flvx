@@ -27,6 +27,7 @@ const (
 	githubRepo     = "EchoHS/flvx"
 	githubAPIBase  = "https://api.github.com"
 	githubHTMLBase = "https://github.com"
+	githubTimeout  = 8 * time.Second
 	upgradeTimeout = 5 * time.Minute
 	batchWorkers   = 5
 
@@ -40,6 +41,7 @@ const (
 var (
 	stableVersionPattern = regexp.MustCompile(`^\d+(?:\.\d+)+$`)
 	testKeywordPattern   = regexp.MustCompile(`(?i)(alpha|beta|rc)`)
+	releaseTagPattern    = regexp.MustCompile(`^[0-9][0-9A-Za-z._-]*$`)
 )
 
 const nodeOnlineRedeployCooldown = 30 * time.Second
@@ -99,6 +101,17 @@ func releaseChannelLabel(channel string) string {
 	return "正式版"
 }
 
+func currentReleaseVersionForChannel(channel string) string {
+	version := strings.TrimSpace(currentPanelVersion())
+	if !releaseTagPattern.MatchString(version) {
+		return ""
+	}
+	if releaseChannelFromTag(version) != normalizeReleaseChannel(channel) {
+		return ""
+	}
+	return version
+}
+
 func (h *Handler) getGithubProxyConfig() (enabled bool, proxyURL string) {
 	enabled = defaultGithubProxyEnabled
 	proxyURL = defaultGithubProxyURL
@@ -137,7 +150,7 @@ func fetchGitHubReleasesDirect(perPage int) ([]githubRelease, error) {
 		perPage = 20
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: githubTimeout}
 	resp, err := githubHTTPGet(client, fmt.Sprintf("%s/repos/%s/releases?per_page=%d", githubAPIBase, githubRepo, perPage))
 	if err != nil {
 		return nil, fmt.Errorf("请求GitHub API失败: %v", err)
@@ -193,7 +206,7 @@ func githubReleaseTagFromAtomEntry(title string, links []struct {
 }
 
 func fetchGitHubReleasesAtom(feedURL string, perPage int) ([]githubRelease, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: githubTimeout}
 	resp, err := githubHTTPGet(client, feedURL)
 	if err != nil {
 		return nil, err

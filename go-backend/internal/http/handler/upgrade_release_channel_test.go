@@ -44,3 +44,27 @@ func TestNormalizeReleaseChannel(t *testing.T) {
 		}
 	}
 }
+
+func TestCurrentReleaseVersionForChannel(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		channel string
+		want    string
+	}{
+		{name: "matching stable", version: "3.0.1", channel: releaseChannelStable, want: "3.0.1"},
+		{name: "matching dev", version: "3.0.1-beta1", channel: releaseChannelDev, want: "3.0.1-beta1"},
+		{name: "channel mismatch", version: "3.0.1-beta1", channel: releaseChannelStable, want: ""},
+		{name: "default development label is not a release", version: "dev", channel: releaseChannelDev, want: ""},
+		{name: "unsafe release tag", version: "3.0.1 beta1", channel: releaseChannelDev, want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("FLUX_VERSION", tc.version)
+			if got := currentReleaseVersionForChannel(tc.channel); got != tc.want {
+				t.Fatalf("currentReleaseVersionForChannel(%q) = %q, want %q", tc.channel, got, tc.want)
+			}
+		})
+	}
+}

@@ -627,10 +627,14 @@ func (h *Handler) nodeInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	channel := normalizeReleaseChannel(req.Channel)
-	version, err := h.resolveLatestReleaseByChannel(channel)
-	if err != nil {
-		response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
-		return
+	version := currentReleaseVersionForChannel(channel)
+	if version == "" {
+		var err error
+		version, err = h.resolveLatestReleaseByChannel(channel)
+		if err != nil {
+			response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
+			return
+		}
 	}
 
 	secret, err := h.repo.GetNodeSecret(req.ID)

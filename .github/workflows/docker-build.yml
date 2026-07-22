@@ -101,16 +101,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25.0'
-
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('go-gost/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          cache-dependency-path: go-gost/go.sum
 
       - name: Resolve GOST module graph
         working-directory: ./go-gost
@@ -243,15 +234,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25.0'
-
-      - name: Cache Go dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-backend-${{ hashFiles('go-backend/go.sum') }}
-          restore-keys: ${{ runner.os }}-go-backend-
+          cache-dependency-path: go-backend/go.sum
 
       - name: Download dependencies
         working-directory: ./go-backend
