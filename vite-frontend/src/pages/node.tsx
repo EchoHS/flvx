@@ -84,6 +84,10 @@ import { useNodeOfflineTimers } from "@/pages/node/use-node-offline-timers";
 import { useNodeRealtime } from "@/pages/node/use-node-realtime";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { loadStoredOrder, saveOrder } from "@/utils/order-storage";
+import {
+  getReleaseChannelFromTag,
+  getUpdateReleaseChannel,
+} from "@/utils/version-update";
 
 const NODE_FALLBACK_REFRESH_INTERVAL_MS = 15000;
 
@@ -1107,7 +1111,9 @@ export default function NodePage() {
     target: "single" | "batch",
     nodeId?: number,
   ) => {
-    const defaultChannel: ReleaseChannel = "stable";
+    const defaultChannel: ReleaseChannel =
+      getReleaseChannelFromTag(import.meta.env.VITE_APP_VERSION || "") ||
+      getUpdateReleaseChannel();
 
     setUpgradeTarget(target);
     setUpgradeTargetNodeId(nodeId || null);

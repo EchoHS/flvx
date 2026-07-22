@@ -3,6 +3,7 @@ package handler
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -161,6 +162,26 @@ func TestHandlerFetchGitHubReleasesUsesDirectFeedWhenProxyDisabled(t *testing.T)
 	}
 	if len(gotURLs) != 1 || gotURLs[0] != "https://github.com/EchoHS/flvx/releases.atom" {
 		t.Fatalf("requests = %#v", gotURLs)
+	}
+}
+
+func TestListReleasesUsesCurrentPanelVersionWithoutNetwork(t *testing.T) {
+	t.Setenv("FLUX_VERSION", "3.0.1-beta2")
+	originalGet := githubHTTPGet
+	t.Cleanup(func() { githubHTTPGet = originalGet })
+	githubHTTPGet = func(client *http.Client, url string) (*http.Response, error) {
+		t.Fatal("did not expect a GitHub request for the current panel channel")
+		return nil, nil
+	}
+
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/node/releases", strings.NewReader(`{"channel":"dev"}`))
+	recorder := httptest.NewRecorder()
+	h.listReleases(recorder, req)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"version":"3.0.1-beta2"`) || !strings.Contains(body, `"channel":"dev"`) {
+		t.Fatalf("response = %s", body)
 	}
 }
 

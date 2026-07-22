@@ -58,9 +58,9 @@ const normalizeTag = (tag: string): string => {
   return tag.trim().replace(/^v/i, "");
 };
 
-type ReleaseTagChannel = UpdateReleaseChannel | null;
-
-const releaseChannelFromTag = (tag: string): ReleaseTagChannel => {
+export const getReleaseChannelFromTag = (
+  tag: string,
+): UpdateReleaseChannel | null => {
   const normalizedTag = normalizeTag(tag).toLowerCase();
 
   if (!normalizedTag) {
@@ -191,7 +191,7 @@ export const getLatestVersionByChannel = async (
   const candidateTags = releases
     .filter((release) => !release.draft && typeof release.tag_name === "string")
     .map((release) => (release.tag_name || "").trim())
-    .filter((tag) => releaseChannelFromTag(tag) === normalizedChannel);
+    .filter((tag) => getReleaseChannelFromTag(tag) === normalizedChannel);
 
   if (candidateTags.length === 0) {
     return null;

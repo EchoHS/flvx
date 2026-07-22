@@ -159,7 +159,7 @@ func fetchGitHubReleasesDirect(perPage int) ([]githubRelease, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("GitHub API返回 %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("GitHub API返回 %d: %s", resp.StatusCode, githubResponseSnippet(body))
 	}
 
 	var releases []githubRelease
@@ -214,7 +214,7 @@ func fetchGitHubReleasesAtom(feedURL string, perPage int) ([]githubRelease, erro
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("GitHub release feed returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("GitHub release feed returned %d: %s", resp.StatusCode, githubResponseSnippet(body))
 	}
 
 	var feed githubReleaseAtom
@@ -244,6 +244,15 @@ func fetchGitHubReleasesAtom(feedURL string, perPage int) ([]githubRelease, erro
 		return nil, fmt.Errorf("GitHub release feed has no usable tags")
 	}
 	return releases, nil
+}
+
+func githubResponseSnippet(body []byte) string {
+	text := strings.Join(strings.Fields(string(body)), " ")
+	const maxLength = 240
+	if len([]rune(text)) <= maxLength {
+		return text
+	}
+	return string([]rune(text)[:maxLength]) + "..."
 }
 
 func githubReleaseFeedURL() string {
@@ -331,11 +340,14 @@ func (h *Handler) nodeUpgrade(w http.ResponseWriter, r *http.Request) {
 	channel := normalizeReleaseChannel(req.Channel)
 	version := strings.TrimSpace(req.Version)
 	if version == "" {
-		var err error
-		version, err = h.resolveLatestReleaseByChannel(channel)
-		if err != nil {
-			response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
-			return
+		version = currentReleaseVersionForChannel(channel)
+		if version == "" {
+			var err error
+			version, err = h.resolveLatestReleaseByChannel(channel)
+			if err != nil {
+				response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
+				return
+			}
 		}
 	}
 
@@ -408,11 +420,14 @@ func (h *Handler) nodeBatchUpgrade(w http.ResponseWriter, r *http.Request) {
 	channel := normalizeReleaseChannel(req.Channel)
 	version := strings.TrimSpace(req.Version)
 	if version == "" {
-		var err error
-		version, err = h.resolveLatestReleaseByChannel(channel)
-		if err != nil {
-			response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
-			return
+		version = currentReleaseVersionForChannel(channel)
+		if version == "" {
+			var err error
+			version, err = h.resolveLatestReleaseByChannel(channel)
+			if err != nil {
+				response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取最新%s失败: %v", releaseChannelLabel(channel), err)))
+				return
+			}
 		}
 	}
 
@@ -472,18 +487,28 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
 
 	channel := normalizeReleaseChannel(req.Channel)
 
-	releases, err := h.fetchGitHubReleases(50)
-	if err != nil {
-		response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取版本列表失败: %v", err)))
-		return
-	}
-
 	type releaseItem struct {
 		Version     string `json:"version"`
 		Name        string `json:"name"`
 		PublishedAt string `json:"publishedAt"`
 		Prerelease  bool   `json:"prerelease"`
 		Channel     string `json:"channel"`
+	}
+
+	if version := currentReleaseVersionForChannel(channel); version != "" {
+		response.WriteJSON(w, response.OK([]releaseItem{{
+			Version:    version,
+			Name:       version,
+			Prerelease: channel == releaseChannelDev,
+			Channel:    channel,
+		}}))
+		return
+	}
+
+	releases, err := h.fetchGitHubReleases(50)
+	if err != nil {
+		response.WriteJSON(w, response.Err(-2, fmt.Sprintf("获取版本列表失败: %v", err)))
+		return
 	}
 
 	items := make([]releaseItem, 0, len(releases))
