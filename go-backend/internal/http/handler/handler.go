@@ -35,6 +35,7 @@ type Handler struct {
 	repo            *repo.Repository
 	jwtSecret       string
 	wsServer        *ws.Server
+	nodeCommandHook func(int64, string, interface{}, time.Duration) (ws.CommandResult, error)
 	metrics         *metrics.IngestionService
 	healthCheck     *health.Checker
 	nftablesManager nftablesRuntimeManager

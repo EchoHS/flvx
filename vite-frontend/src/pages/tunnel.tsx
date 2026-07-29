@@ -110,6 +110,7 @@ interface TunnelMaskConfig {
   cloudflareEnabled?: number;
   cloudflareApiToken?: string;
   cloudflareApiTokenSet?: boolean;
+  cloudflareAccountId?: string;
   cloudflareZoneId?: string;
   cloudflareRecordName?: string;
 }
@@ -172,6 +173,7 @@ const createDefaultMaskConfig = (): TunnelMaskConfig => ({
   innerPort: DEFAULT_MASK_INNER_PORT,
   cloudflareEnabled: 0,
   cloudflareApiToken: "",
+  cloudflareAccountId: "",
   cloudflareZoneId: "",
   cloudflareRecordName: "",
 });
@@ -181,6 +183,49 @@ const supportsMaskSite = (protocol?: string) =>
 
 const recommends443 = (protocol?: string) =>
   protocol === "tls" || protocol === "mtls";
+
+const maskHostname = (value?: string) => {
+  const host = (value || "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
+
+  if (
+    !host ||
+    host.includes(":") ||
+    /^[0-9.]+$/.test(host) ||
+    /[\s/?#]/.test(host)
+  ) {
+    return "";
+  }
+
+  return host.toLowerCase();
+};
+
+const isValidMaskHostname = (host: string) =>
+  host.length <= 253 &&
+  host.includes(".") &&
+  host
+    .split(".")
+    .every(
+      (label) =>
+        label.length > 0 &&
+        label.length <= 63 &&
+        !label.startsWith("-") &&
+        !label.endsWith("-") &&
+        /^[A-Za-z0-9-]+$/.test(label),
+    );
+
+const getDefaultMaskDomain = (
+  outNode: ChainTunnel | undefined,
+  nodes: Node[],
+) => {
+  if (!outNode || outNode.nodeId <= 0) return "";
+
+  const node = nodes.find((candidate) => candidate.id === outNode.nodeId);
+
+  return maskHostname(outNode.connectIp) || maskHostname(node?.serverIp);
+};
 
 const getTunnelDiagnosisTarget = (tunnel: Tunnel) => ({
   targetIp: tunnel.probeTargetHost || DEFAULT_PROBE_TARGET_HOST,
@@ -637,6 +682,33 @@ export default function TunnelPage() {
       isEdit,
     );
 
+    if (form.maskConfig?.enabled === 1) {
+      const outNode = form.outNodeId?.find((item) => item.nodeId > 0);
+      const domain =
+        maskHostname(form.maskConfig.domain) ||
+        getDefaultMaskDomain(outNode, nodes);
+
+      if (!domain) {
+        newErrors.maskDomain = "出口节点使用 IP 时必须填写伪装域名";
+      } else if (!isValidMaskHostname(domain)) {
+        newErrors.maskDomain = "请输入有效的完整域名";
+      }
+
+      const email = form.maskConfig.acmeEmail.trim();
+
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        newErrors.maskEmail = "证书联系邮箱格式无效";
+      }
+
+      if (
+        form.maskConfig.cloudflareEnabled === 1 &&
+        !form.maskConfig.cloudflareApiToken?.trim() &&
+        !form.maskConfig.cloudflareApiTokenSet
+      ) {
+        newErrors.maskCloudflareToken = "请输入 Cloudflare API Token";
+      }
+    }
+
     setErrors(newErrors);
 
     return Object.keys(newErrors).length === 0;
@@ -964,6 +1036,7 @@ export default function TunnelPage() {
       const maskConfig: TunnelMaskConfig | undefined = form.maskConfig
         ? { ...form.maskConfig, cloudflareApiToken: undefined }
         : undefined;
+
       if (maskConfig && cloudflareApiToken) {
         maskConfig.cloudflareApiToken = cloudflareApiToken;
       }
@@ -984,7 +1057,28 @@ export default function TunnelPage() {
         : await createTunnel(data);
 
       if (response.code === 0) {
-        toast.success(isEdit ? "更新成功" : "创建成功");
+        const syncWarnings = Array.isArray(
+          (response.data as { warnings?: string[] } | null)?.warnings,
+        )
+          ? (response.data as { warnings: string[] }).warnings
+          : [];
+
+        toast.success(
+          syncWarnings.length > 0
+            ? `${isEdit ? "更新成功" : "创建成功"}，另有 ${syncWarnings.length} 条节点下发提示`
+            : isEdit
+              ? "更新成功"
+              : "创建成功",
+        );
+        if (syncWarnings.length > 0) {
+          const visibleWarnings = syncWarnings.slice(0, 3);
+          const remaining = syncWarnings.length - visibleWarnings.length;
+
+          toast(
+            `${visibleWarnings.join("\n")}${remaining > 0 ? `\n另有 ${remaining} 条提示` : ""}`,
+            { duration: 8000 },
+          );
+        }
         setModalOpen(false);
         await refreshTunnelList(false);
       } else {
@@ -2811,6 +2905,13 @@ export default function TunnelPage() {
                         const isMultiExit = selectedOutNodeIds.length > 1;
                         const commonOutIpOptions =
                           getCommonIpOptions(selectedOutNodeIds);
+                        const defaultMaskDomain = getDefaultMaskDomain(
+                          form.outNodeId?.[0],
+                          nodes,
+                        );
+                        const effectiveMaskDomain =
+                          maskHostname(form.maskConfig?.domain) ||
+                          defaultMaskDomain;
 
                         return (
                           <>
@@ -3050,6 +3151,7 @@ export default function TunnelPage() {
                                   setForm((prev) => {
                                     const currentOutNodes =
                                       prev.outNodeId || [];
+
                                     if (currentOutNodes.length === 0) {
                                       return {
                                         ...prev,
@@ -3253,12 +3355,21 @@ export default function TunnelPage() {
                                 <Alert
                                   className="md:col-span-2"
                                   color="primary"
-                                  description="可复用绝大多数 TCP 端口，推荐 443、8443、9443、10443；浏览器会屏蔽部分危险端口，非 443 访问时需使用 https://域名:端口。80 端口必须使用 Cloudflare DNS-01。Cloudflare API 仅用于 DNS 解析和证书签发，不启用 CDN 代理。"
+                                  description="可复用绝大多数 TCP 端口，推荐 443、8443、9443、10443；浏览器会屏蔽部分危险端口，非 443 访问时需使用 https://域名:端口。80 端口必须使用 Cloudflare DNS-01。Cloudflare 模式不启用 CDN，也不会安装或调用 acme.sh。"
                                   variant="flat"
                                 />
                                 <Input
+                                  description={
+                                    defaultMaskDomain
+                                      ? `留空使用出口节点连接域名 ${defaultMaskDomain}`
+                                      : "出口节点使用 IP 时必须填写域名"
+                                  }
+                                  errorMessage={errors.maskDomain}
+                                  isInvalid={!!errors.maskDomain}
                                   label="伪装域名"
-                                  placeholder="www.example.com"
+                                  placeholder={
+                                    defaultMaskDomain || "cdn.your-domain.com"
+                                  }
                                   value={form.maskConfig?.domain || ""}
                                   variant="bordered"
                                   onChange={(e) =>
@@ -3293,8 +3404,15 @@ export default function TunnelPage() {
                                   }
                                 />
                                 <Input
-                                  label="ACME 邮箱"
-                                  placeholder="admin@example.com"
+                                  description="可选；非 Cloudflare 模式会同步到已有 acme.sh 账户"
+                                  errorMessage={errors.maskEmail}
+                                  isInvalid={!!errors.maskEmail}
+                                  label="证书联系邮箱"
+                                  placeholder={
+                                    effectiveMaskDomain
+                                      ? `admin@${effectiveMaskDomain}`
+                                      : "admin@your-domain.com"
+                                  }
                                   value={form.maskConfig?.acmeEmail || ""}
                                   variant="bordered"
                                   onChange={(e) =>
@@ -3373,11 +3491,14 @@ export default function TunnelPage() {
                                   <>
                                     <Input
                                       className="md:col-span-2"
+                                      description="使用 Bearer API Token，需要 Zone DNS Edit 和 Zone Read 权限"
+                                      errorMessage={errors.maskCloudflareToken}
+                                      isInvalid={!!errors.maskCloudflareToken}
                                       label="Cloudflare API Token"
                                       placeholder={
                                         form.maskConfig?.cloudflareApiTokenSet
                                           ? "已保存，留空保持不变"
-                                          : "需要 Zone DNS Edit 权限"
+                                          : "需要 Zone DNS Edit 和 Zone Read 权限"
                                       }
                                       type="password"
                                       value={
@@ -3392,6 +3513,25 @@ export default function TunnelPage() {
                                             ...(prev.maskConfig ||
                                               createDefaultMaskConfig()),
                                             cloudflareApiToken: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                    <Input
+                                      label="Cloudflare Account ID"
+                                      placeholder="可留空；用于限定 Zone 所属账户"
+                                      value={
+                                        form.maskConfig?.cloudflareAccountId ||
+                                        ""
+                                      }
+                                      variant="bordered"
+                                      onChange={(e) =>
+                                        setForm((prev) => ({
+                                          ...prev,
+                                          maskConfig: {
+                                            ...(prev.maskConfig ||
+                                              createDefaultMaskConfig()),
+                                            cloudflareAccountId: e.target.value,
                                           },
                                         }))
                                       }
@@ -3416,7 +3556,11 @@ export default function TunnelPage() {
                                     />
                                     <Input
                                       label="DNS 记录名"
-                                      placeholder="默认使用伪装域名"
+                                      placeholder={
+                                        effectiveMaskDomain
+                                          ? `默认使用 ${effectiveMaskDomain}`
+                                          : "默认使用伪装域名"
+                                      }
                                       value={
                                         form.maskConfig?.cloudflareRecordName ||
                                         ""

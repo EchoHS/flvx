@@ -54,6 +54,19 @@ func TestBuildWebSocketCandidatesSecureFirst(t *testing.T) {
 	}
 }
 
+func TestCommandRequiresSerializationOnlyExemptsReadOnlyDiagnostics(t *testing.T) {
+	for _, commandType := range []string{"TcpPing", "UdpPing", "ServiceMonitorCheck"} {
+		if commandRequiresSerialization(commandType) {
+			t.Fatalf("expected %s to remain concurrent", commandType)
+		}
+	}
+	for _, commandType := range []string{"UpdateService", "AddChains", "DeleteLimiters", "ConfigureMaskSite", "SetProtocol"} {
+		if !commandRequiresSerialization(commandType) {
+			t.Fatalf("expected %s to be serialized", commandType)
+		}
+	}
+}
+
 func TestBuildWebSocketCandidatesUsesPreferredScheme(t *testing.T) {
 	candidates := buildWebSocketCandidates("panel.example.com:443", "abc", "2.0.2", 1, 0, 1, "ws")
 

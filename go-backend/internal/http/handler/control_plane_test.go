@@ -640,3 +640,47 @@ func TestProcessServerAddress_NormalizesIPv6(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardListenerProbeTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		node     *nodeRecord
+		port     forwardPortRecord
+		wantHost string
+		wantPort int
+	}{
+		{
+			name:     "default ipv6 wildcard",
+			node:     &nodeRecord{TCPListenAddr: "[::]"},
+			port:     forwardPortRecord{Port: 12001},
+			wantHost: "::1",
+			wantPort: 12001,
+		},
+		{
+			name:     "explicit bind address",
+			node:     &nodeRecord{TCPListenAddr: "[::]"},
+			port:     forwardPortRecord{Port: 12001, InIP: "10.0.0.10"},
+			wantHost: "10.0.0.10",
+			wantPort: 12001,
+		},
+		{
+			name:     "explicit bind address and port",
+			node:     &nodeRecord{TCPListenAddr: "0.0.0.0"},
+			port:     forwardPortRecord{Port: 12001, InIP: "10.0.0.10:13001"},
+			wantHost: "10.0.0.10",
+			wantPort: 13001,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port, err := forwardListenerProbeTarget(tt.node, tt.port)
+			if err != nil {
+				t.Fatalf("probe target: %v", err)
+			}
+			if host != tt.wantHost || port != tt.wantPort {
+				t.Fatalf("expected %s:%d, got %s:%d", tt.wantHost, tt.wantPort, host, port)
+			}
+		})
+	}
+}

@@ -161,3 +161,49 @@ func TestSaveTunnelMaskConfigPreservesCloudflareToken(t *testing.T) {
 		t.Fatalf("expected saved token to be preserved, got %+v", next.CloudflareAPIToken)
 	}
 }
+
+func TestParseTunnelMaskConfigDefaultsToExitNodeDomain(t *testing.T) {
+	state := &tunnelCreateState{
+		OutNodes: []tunnelRuntimeNode{{
+			NodeID:    2,
+			Protocol:  "mwss",
+			ChainType: 3,
+			Port:      443,
+		}},
+		Nodes: map[int64]*nodeRecord{
+			2: {ID: 2, ServerIP: "edge.gekzi.com"},
+		},
+	}
+	req := map[string]interface{}{
+		"maskConfig": map[string]interface{}{
+			"enabled":             1,
+			"cloudflareEnabled":   1,
+			"cloudflareApiToken":  "cf-token",
+			"cloudflareAccountId": "account-id",
+		},
+	}
+
+	cfg, err := parseTunnelMaskConfigFromRequest(req, state, 2)
+	if err != nil {
+		t.Fatalf("parse mask config: %v", err)
+	}
+	if cfg.Domain != "edge.gekzi.com" || cfg.CloudflareRecordName.String != "edge.gekzi.com" {
+		t.Fatalf("expected node domain defaults, got %+v", cfg)
+	}
+	if !cfg.CloudflareAccountID.Valid || cfg.CloudflareAccountID.String != "account-id" {
+		t.Fatalf("expected Cloudflare account id, got %+v", cfg.CloudflareAccountID)
+	}
+}
+
+func TestParseTunnelMaskConfigRejectsEmptyDomainForIPNode(t *testing.T) {
+	state := &tunnelCreateState{
+		OutNodes: []tunnelRuntimeNode{{NodeID: 2, Protocol: "mwss", ChainType: 3, Port: 443}},
+		Nodes:    map[int64]*nodeRecord{2: {ID: 2, ServerIP: "203.0.113.20", ServerIPv4: "203.0.113.20"}},
+	}
+	_, err := parseTunnelMaskConfigFromRequest(map[string]interface{}{
+		"maskConfig": map[string]interface{}{"enabled": 1},
+	}, state, 2)
+	if err == nil || err.Error() != "伪装站域名为空，且出口节点连接地址不是域名" {
+		t.Fatalf("expected missing domain error, got %v", err)
+	}
+}

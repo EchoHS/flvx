@@ -169,8 +169,10 @@ type WebSocketReporter struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
 	connected         bool
-	connecting        bool              // 正在连接状态
-	connMutex         sync.Mutex        // 连接状态锁
+	connecting        bool       // 正在连接状态
+	connMutex         sync.Mutex // 连接状态锁
+	commandMutex      sync.Mutex // 串行化所有会修改运行时和 gost.json 的命令
+	commandQueue      chan CommandMessage
 	aesCrypto         *crypto.AESCrypto // AES加密器
 }
 
@@ -200,12 +202,15 @@ func NewWebSocketReporter(serverURL string, secret string) *WebSocketReporter {
 		cancel:         cancel,
 		connected:      false,
 		connecting:     false,
+		commandQueue:   make(chan CommandMessage, 256),
 		aesCrypto:      aesCrypto,
 	}
 }
 
 // Start 启动WebSocket报告器
 func (w *WebSocketReporter) Start() {
+	go runMaskCertificateRenewalLoop(w.ctx)
+	go w.runCommandWorker()
 	go w.run()
 }
 
@@ -752,8 +757,7 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 			}
 
 			if cmdMsg.Type != "call" {
-				// 所有命令统一异步执行，避免阻塞消息接收循环
-				go w.routeCommand(cmdMsg)
+				w.dispatchCommand(cmdMsg)
 			}
 		} else {
 			// 处理普通消息
@@ -764,8 +768,7 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 				return
 			}
 			if cmdMsg.Type != "call" {
-				// 所有命令统一异步执行，避免阻塞消息接收循环
-				go w.routeCommand(cmdMsg)
+				w.dispatchCommand(cmdMsg)
 			}
 		}
 
@@ -774,8 +777,34 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 	}
 }
 
+func (w *WebSocketReporter) dispatchCommand(cmd CommandMessage) {
+	if !commandRequiresSerialization(cmd.Type) {
+		go w.routeCommand(cmd)
+		return
+	}
+	select {
+	case w.commandQueue <- cmd:
+	case <-w.ctx.Done():
+	}
+}
+
+func (w *WebSocketReporter) runCommandWorker() {
+	for {
+		select {
+		case cmd := <-w.commandQueue:
+			w.routeCommand(cmd)
+		case <-w.ctx.Done():
+			return
+		}
+	}
+}
+
 // routeCommand 路由命令到对应的处理函数
 func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
+	if commandRequiresSerialization(cmd.Type) {
+		w.commandMutex.Lock()
+		defer w.commandMutex.Unlock()
+	}
 	fmt.Printf("🔔 收到命令: type=%s requestId=%s\n", cmd.Type, cmd.RequestId)
 	var err error
 	var response CommandResponse
@@ -893,6 +922,15 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	}
 
 	w.sendResponse(response)
+}
+
+func commandRequiresSerialization(commandType string) bool {
+	switch strings.ToLower(strings.TrimSpace(commandType)) {
+	case "tcpping", "udpping", "servicemonitorcheck":
+		return false
+	default:
+		return true
+	}
 }
 
 // Service 命令处理函数

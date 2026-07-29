@@ -15,6 +15,8 @@ import (
 	xservice "github.com/go-gost/x/service"
 )
 
+var parseServiceConfig = parser.ParseService
+
 func createServices(req createServicesRequest) error {
 
 	if len(req.Data) == 0 {
@@ -87,19 +89,22 @@ func updateServices(req updateServicesRequest) error {
 	}
 
 	// 第一阶段：验证所有服务名称有效性
+	seenNames := make(map[string]struct{}, len(req.Data))
 	for i := range req.Data {
 		name := strings.TrimSpace(req.Data[i].Name)
 		if name == "" {
 			return errors.New("service name is required")
 		}
+		if _, exists := seenNames[name]; exists {
+			return errors.New("duplicate service " + name)
+		}
+		seenNames[name] = struct{}{}
 		req.Data[i].Name = name
 	}
 
 	// 第二阶段：逐个更新服务（Upsert模式：存在则更新，不存在则创建）
-	changedServices := make([]struct {
-		config  config.ServiceConfig
-		service service.Service
-	}, 0, len(req.Data))
+	changedServices := make([]config.ServiceConfig, 0, len(req.Data))
+	snapshots := make([]serviceUpdateSnapshot, 0, len(req.Data))
 	for i := range req.Data {
 		serviceConfig := &req.Data[i]
 		name := serviceConfig.Name
@@ -107,33 +112,35 @@ func updateServices(req updateServicesRequest) error {
 			continue
 		}
 
-		// 1. 获取旧服务
 		old := registry.ServiceRegistry().Get(name)
+		oldConfig := findServiceConfig(name)
+		if old != nil && oldConfig == nil {
+			return fmt.Errorf("service %s runtime configuration not found; refusing unsafe update", name)
+		}
+		snapshots = append(snapshots, serviceUpdateSnapshot{
+			name:       name,
+			hadRuntime: old != nil,
+			config:     oldConfig,
+		})
 
-		// 2. 关闭旧服务 (如果存在)
 		if old != nil {
-			// 3. 从注册表移除旧服务；registry 会负责关闭旧服务。
 			registry.ServiceRegistry().Unregister(name)
 		}
 
-		// 4. 解析新服务配置
-		svc, err := parser.ParseService(serviceConfig)
+		svc, err := parseServiceConfig(serviceConfig)
 		if err != nil {
-			return errors.New("create service " + name + " failed: " + err.Error())
+			updateErr := errors.New("create service " + name + " failed: " + err.Error())
+			return serviceUpdateRollbackError(updateErr, rollbackServiceUpdateRuntimes(snapshots))
 		}
-		changedServices = append(changedServices, struct {
-			config  config.ServiceConfig
-			service service.Service
-		}{*serviceConfig, svc})
 
-		// 5. 注册新服务
 		if err := registry.ServiceRegistry().Register(name, svc); err != nil {
-			svc.Close()
-			return errors.New("service " + name + " already exists")
+			_ = svc.Close()
+			updateErr := errors.New("service " + name + " already exists")
+			return serviceUpdateRollbackError(updateErr, rollbackServiceUpdateRuntimes(snapshots))
 		}
 
-		// 6. 启动新服务
 		go svc.Serve()
+		changedServices = append(changedServices, *serviceConfig)
 	}
 	if len(changedServices) == 0 {
 		return nil
@@ -143,7 +150,7 @@ func updateServices(req updateServicesRequest) error {
 	if err := config.OnUpdate(func(c *config.Config) error {
 		for i := range changedServices {
 			// 创建副本以确保指针安全
-			cfgCopy := changedServices[i].config
+			cfgCopy := changedServices[i]
 			found := false
 			for j := range c.Services {
 				if c.Services[j].Name == cfgCopy.Name {
@@ -158,10 +165,108 @@ func updateServices(req updateServicesRequest) error {
 		}
 		return nil
 	}); err != nil {
-		return err
+		rollbackErr := rollbackServiceUpdateRuntimes(snapshots)
+		if restoreErr := restoreServiceUpdateConfigs(snapshots); restoreErr != nil {
+			rollbackErr = errors.Join(rollbackErr, restoreErr)
+		}
+		return serviceUpdateRollbackError(err, rollbackErr)
 	}
 
 	return nil
+}
+
+type serviceUpdateSnapshot struct {
+	name       string
+	hadRuntime bool
+	config     *config.ServiceConfig
+}
+
+func findServiceConfig(name string) *config.ServiceConfig {
+	cfg := config.Global()
+	if cfg == nil {
+		return nil
+	}
+	for _, current := range cfg.Services {
+		if current == nil || strings.TrimSpace(current.Name) != name {
+			continue
+		}
+		copy := *current
+		return &copy
+	}
+	return nil
+}
+
+func rollbackServiceUpdateRuntimes(snapshots []serviceUpdateSnapshot) error {
+	var rollbackErr error
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		snapshot := snapshots[i]
+		if registry.ServiceRegistry().Get(snapshot.name) != nil {
+			registry.ServiceRegistry().Unregister(snapshot.name)
+		}
+		if !snapshot.hadRuntime {
+			continue
+		}
+		if snapshot.config == nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("service %s rollback configuration not found", snapshot.name))
+			continue
+		}
+
+		svc, err := parseServiceConfig(snapshot.config)
+		if err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore service %s failed: %w", snapshot.name, err))
+			continue
+		}
+		if err := registry.ServiceRegistry().Register(snapshot.name, svc); err != nil {
+			_ = svc.Close()
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore service %s registration failed: %w", snapshot.name, err))
+			continue
+		}
+		if !serviceConfigPaused(snapshot.config) {
+			go svc.Serve()
+		}
+	}
+	return rollbackErr
+}
+
+func restoreServiceUpdateConfigs(snapshots []serviceUpdateSnapshot) error {
+	return config.OnUpdate(func(c *config.Config) error {
+		for _, snapshot := range snapshots {
+			found := false
+			for i := 0; i < len(c.Services); i++ {
+				if c.Services[i] == nil || strings.TrimSpace(c.Services[i].Name) != snapshot.name {
+					continue
+				}
+				found = true
+				if snapshot.config == nil {
+					c.Services = append(c.Services[:i], c.Services[i+1:]...)
+				} else {
+					copy := *snapshot.config
+					c.Services[i] = &copy
+				}
+				break
+			}
+			if !found && snapshot.config != nil {
+				copy := *snapshot.config
+				c.Services = append(c.Services, &copy)
+			}
+		}
+		return nil
+	})
+}
+
+func serviceConfigPaused(cfg *config.ServiceConfig) bool {
+	if cfg == nil || cfg.Metadata == nil {
+		return false
+	}
+	paused, _ := cfg.Metadata["paused"].(bool)
+	return paused
+}
+
+func serviceUpdateRollbackError(updateErr, rollbackErr error) error {
+	if rollbackErr == nil {
+		return updateErr
+	}
+	return fmt.Errorf("%v; rollback failed: %w", updateErr, rollbackErr)
 }
 
 func serviceConfigUnchanged(name string, next config.ServiceConfig) bool {

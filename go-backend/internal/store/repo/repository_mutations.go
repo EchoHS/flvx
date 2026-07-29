@@ -495,7 +495,7 @@ func (r *Repository) UpsertTunnelMaskConfigTx(tx *gorm.DB, cfg model.TunnelMaskC
 		Columns: []clause.Column{{Name: "tunnel_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"enabled", "domain", "ws_path", "site_repo", "site_dir", "acme_email", "inner_port",
-			"cloudflare_enabled", "cloudflare_api_token", "cloudflare_zone_id", "cloudflare_record_name",
+			"cloudflare_enabled", "cloudflare_api_token", "cloudflare_account_id", "cloudflare_zone_id", "cloudflare_record_name",
 			"status", "last_error", "updated_time",
 		}),
 	}).Create(&cfg).Error
@@ -945,23 +945,34 @@ func (r *Repository) ReplaceForwardPorts(forwardID int64, entries []struct {
 		return errors.New("repository not initialized")
 	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("forward_id = ?", forwardID).Delete(&model.ForwardPort{}).Error; err != nil {
-			return err
-		}
-		if len(entries) == 0 {
-			return nil
-		}
-		rows := make([]model.ForwardPort, 0, len(entries))
-		for _, e := range entries {
-			rows = append(rows, model.ForwardPort{
-				ForwardID: forwardID,
-				NodeID:    e.NodeID,
-				Port:      e.Port,
-				InIP:      sql.NullString{String: e.InIP, Valid: e.InIP != ""},
-			})
-		}
-		return tx.Create(&rows).Error
+		return r.ReplaceForwardPortsTx(tx, forwardID, entries)
 	})
+}
+
+func (r *Repository) ReplaceForwardPortsTx(tx *gorm.DB, forwardID int64, entries []struct {
+	NodeID int64
+	Port   int
+	InIP   string
+}) error {
+	if tx == nil {
+		return errors.New("database unavailable")
+	}
+	if err := tx.Where("forward_id = ?", forwardID).Delete(&model.ForwardPort{}).Error; err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	rows := make([]model.ForwardPort, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, model.ForwardPort{
+			ForwardID: forwardID,
+			NodeID:    e.NodeID,
+			Port:      e.Port,
+			InIP:      sql.NullString{String: e.InIP, Valid: strings.TrimSpace(e.InIP) != ""},
+		})
+	}
+	return tx.Create(&rows).Error
 }
 
 func (r *Repository) UpdateForwardPortBindIP(forwardID, nodeID int64, port int, inIP string) error {
@@ -1006,16 +1017,27 @@ func (r *Repository) GetUsedPortsOnNodeAsMap(nodeID int64) (map[int]bool, error)
 	if r == nil || r.db == nil {
 		return nil, errors.New("repository not initialized")
 	}
+	return r.GetUsedPortsOnNodeAsMapTx(r.db, nodeID, 0)
+}
+
+func (r *Repository) GetUsedPortsOnNodeAsMapTx(tx *gorm.DB, nodeID, excludeForwardID int64) (map[int]bool, error) {
+	if tx == nil {
+		return nil, errors.New("database unavailable")
+	}
 	used := make(map[int]bool)
 	var forwardPorts []int
-	if err := r.db.Model(&model.ForwardPort{}).Where("node_id = ?", nodeID).Pluck("port", &forwardPorts).Error; err != nil {
+	forwardQuery := tx.Model(&model.ForwardPort{}).Where("node_id = ?", nodeID)
+	if excludeForwardID > 0 {
+		forwardQuery = forwardQuery.Where("forward_id <> ?", excludeForwardID)
+	}
+	if err := forwardQuery.Pluck("port", &forwardPorts).Error; err != nil {
 		return nil, err
 	}
 	for _, p := range forwardPorts {
 		used[p] = true
 	}
 	var chainPorts []int
-	if err := r.db.Model(&model.ChainTunnel{}).Where("node_id = ? AND port > 0", nodeID).Pluck("port", &chainPorts).Error; err != nil {
+	if err := tx.Model(&model.ChainTunnel{}).Where("node_id = ? AND port > 0", nodeID).Pluck("port", &chainPorts).Error; err != nil {
 		return nil, err
 	}
 	for _, p := range chainPorts {

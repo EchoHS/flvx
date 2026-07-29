@@ -233,6 +233,10 @@ func (h *Handler) syncForwardServices(forward *forwardRecord, method string, all
 }
 
 func (h *Handler) syncForwardServicesWithWarnings(forward *forwardRecord, method string, allowFallbackAdd bool) ([]string, error) {
+	return h.syncForwardServicesOnNodesWithWarnings(forward, method, allowFallbackAdd, nil)
+}
+
+func (h *Handler) syncForwardServicesOnNodesWithWarnings(forward *forwardRecord, method string, allowFallbackAdd bool, nodeIDs []int64) ([]string, error) {
 	if h == nil || forward == nil {
 		return nil, errors.New("invalid forward sync context")
 	}
@@ -260,6 +264,13 @@ func (h *Handler) syncForwardServicesWithWarnings(forward *forwardRecord, method
 	}
 	if len(ports) == 0 {
 		return nil, errors.New("转发入口端口不存在")
+	}
+	ports, err = selectForwardPortsForNodes(ports, nodeIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(ports) == 0 {
+		return nil, nil
 	}
 	warnings := make([]string, 0)
 
@@ -359,11 +370,9 @@ func (h *Handler) syncForwardServicesWithWarnings(forward *forwardRecord, method
 		}
 		services := buildForwardServiceConfigs(serviceBase, forward, tunnel, node, fp.Port, strings.TrimSpace(fp.InIP), runtimeLimiters)
 		_, err = h.sendNodeCommand(node.ID, method, services, true, false)
-		if err != nil && allowFallbackAdd && method == "UpdateService" {
-			if isNotFoundError(err) {
-				if delErr := h.deleteForwardServicesOnNode(forward, node.ID); delErr != nil && !isNotFoundError(delErr) {
-					return warnings, fmt.Errorf("节点 %s 清理旧服务失败: %w", node.Name, delErr)
-				}
+		if err != nil && allowFallbackAdd && method == "UpdateService" && isNotFoundError(err) {
+			if delErr := h.deleteForwardServicesOnNode(forward, node.ID); delErr != nil && !isNotFoundError(delErr) {
+				return warnings, fmt.Errorf("节点 %s 清理旧服务失败: %w", node.Name, delErr)
 			}
 			_, err = h.sendNodeCommand(node.ID, "AddService", services, true, false)
 		}
@@ -391,11 +400,73 @@ func (h *Handler) syncForwardServicesWithWarnings(forward *forwardRecord, method
 	// Keep paused forwards paused after UpdateService/AddService, since agent-side UpdateService
 	// always restarts services.
 	if forward.Status != 1 {
-		if err := h.controlForwardServices(forward, "PauseService", false); err != nil {
+		if nodeIDs == nil {
+			if err := h.controlForwardServices(forward, "PauseService", false); err != nil {
+				return warnings, err
+			}
+		} else if err := h.controlForwardServicesOnSelectedNodes(forward, ports, serviceBase, "PauseService"); err != nil {
 			return warnings, err
 		}
 	}
 	return warnings, nil
+}
+
+func selectForwardPortsForNodes(ports []forwardPortRecord, nodeIDs []int64) ([]forwardPortRecord, error) {
+	if nodeIDs == nil {
+		return ports, nil
+	}
+	wanted := make(map[int64]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if nodeID > 0 {
+			wanted[nodeID] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return []forwardPortRecord{}, nil
+	}
+
+	selected := make([]forwardPortRecord, 0, len(wanted))
+	for _, fp := range ports {
+		if _, ok := wanted[fp.NodeID]; !ok {
+			continue
+		}
+		selected = append(selected, fp)
+		delete(wanted, fp.NodeID)
+	}
+	if len(wanted) > 0 {
+		missing := make([]string, 0, len(wanted))
+		for nodeID := range wanted {
+			missing = append(missing, strconv.FormatInt(nodeID, 10))
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("新增入口节点缺少转发端口映射: %s", strings.Join(missing, ","))
+	}
+	return selected, nil
+}
+
+func (h *Handler) controlForwardServicesOnSelectedNodes(forward *forwardRecord, ports []forwardPortRecord, serviceBase, commandType string) error {
+	seen := make(map[int64]struct{}, len(ports))
+	for _, fp := range ports {
+		if _, ok := seen[fp.NodeID]; ok {
+			continue
+		}
+		seen[fp.NodeID] = struct{}{}
+		handled, lastNotFoundErr, err := h.controlForwardServicesOnNode(fp.NodeID, []string{serviceBase}, commandType)
+		if err != nil {
+			if isNodeOfflineOrTimeoutError(err) {
+				continue
+			}
+			return err
+		}
+		if handled {
+			continue
+		}
+		if lastNotFoundErr != nil {
+			return lastNotFoundErr
+		}
+		return fmt.Errorf("节点 %d 服务控制失败", fp.NodeID)
+	}
+	return nil
 }
 
 func (h *Handler) fallbackForwardPortToDefaultBind(forward *forwardRecord, tunnel *tunnelRecord, node *nodeRecord, fp forwardPortRecord, serviceBase string, runtimeLimiters forwardRuntimeLimiters) (string, error) {
@@ -701,11 +772,15 @@ func (h *Handler) sendNodeCommandWithTimeout(nodeID int64, commandType string, d
 		timeout = defaultNodeCommandTimeout
 	}
 
-	node, nodeErr := h.getNodeRecord(nodeID)
-	if nodeErr == nil && node != nil && node.IsRemote == 1 {
-		result, err = h.sendRemoteNodeCommandWithTimeout(node, commandType, data, timeout)
+	if h.nodeCommandHook != nil {
+		result, err = h.nodeCommandHook(nodeID, commandType, data, timeout)
 	} else {
-		result, err = h.wsServer.SendCommand(nodeID, commandType, data, timeout)
+		node, nodeErr := h.getNodeRecord(nodeID)
+		if nodeErr == nil && node != nil && node.IsRemote == 1 {
+			result, err = h.sendRemoteNodeCommandWithTimeout(node, commandType, data, timeout)
+		} else {
+			result, err = h.wsServer.SendCommand(nodeID, commandType, data, timeout)
+		}
 	}
 	if err == nil {
 		return result, nil
@@ -922,7 +997,33 @@ func (h *Handler) prepareForwardDiagnosis(forward *forwardRecord) (string, []dia
 	protocol := strings.ToLower(strings.TrimSpace(tunnel.Protocol))
 
 	inNodes, chainHops, outNodes := splitChainNodeGroups(chainRows)
-	workItems := make([]diagnosisWorkItem, 0, len(chainRows)*2+len(targets))
+	ports, err := h.listForwardPorts(forward.ID)
+	if err != nil {
+		return "", nil, err
+	}
+
+	workItems := make([]diagnosisWorkItem, 0, len(chainRows)*2+len(targets)+len(ports))
+	for _, fp := range ports {
+		node, nodeErr := h.getNodeRecord(fp.NodeID)
+		if nodeErr != nil {
+			return "", nil, nodeErr
+		}
+		host, port, targetErr := forwardListenerProbeTarget(node, fp)
+		if targetErr != nil {
+			return "", nil, targetErr
+		}
+		workItems = append(workItems, diagnosisWorkItem{
+			fromNodeID:  fp.NodeID,
+			targetIP:    host,
+			targetPort:  port,
+			description: fmt.Sprintf("入口规则监听(%s)", net.JoinHostPort(host, strconv.Itoa(port))),
+			protocol:    "tcp",
+			metadata: map[string]interface{}{
+				"fromChainType": 1,
+				"diagnosisKind": "forward_listener",
+			},
+		})
+	}
 
 	switch tunnel.Type {
 	case 1:
@@ -1054,6 +1155,42 @@ func (h *Handler) prepareForwardDiagnosis(forward *forwardRecord) (string, []dia
 	}
 
 	return forward.Name, workItems, nil
+}
+
+func forwardListenerProbeTarget(node *nodeRecord, fp forwardPortRecord) (string, int, error) {
+	if node == nil {
+		return "", 0, errors.New("入口节点不存在")
+	}
+	if fp.Port <= 0 || fp.Port > 65535 {
+		return "", 0, errors.New("转发入口端口无效")
+	}
+
+	host := strings.TrimSpace(fp.InIP)
+	port := fp.Port
+	if host != "" {
+		if parsedHost, parsedPort, err := net.SplitHostPort(processServerAddress(host)); err == nil {
+			n, convErr := strconv.Atoi(parsedPort)
+			if convErr != nil || n <= 0 || n > 65535 {
+				return "", 0, errors.New("转发监听端口无效")
+			}
+			host = parsedHost
+			port = n
+		}
+	} else {
+		host = strings.TrimSpace(node.TCPListenAddr)
+		if parsedHost, _, err := net.SplitHostPort(processServerAddress(host)); err == nil {
+			host = parsedHost
+		}
+	}
+
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	switch host {
+	case "", "0.0.0.0", "*":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	return host, port, nil
 }
 
 func (h *Handler) diagnoseTunnelRuntime(ctx context.Context, tunnelID int64) (map[string]interface{}, error) {

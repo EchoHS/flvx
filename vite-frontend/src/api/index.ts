@@ -138,13 +138,13 @@ export const clearNodeNftables = (nodeId: number) =>
 
 // 隧道CRUD操作 - 全部使用POST请求
 export const createTunnel = (data: TunnelMutationPayload) =>
-  Network.post("/tunnel/create", data);
+  Network.post("/tunnel/create", data, { timeout: 420_000 });
 export const getTunnelList = () =>
   Network.post<TunnelApiItem[]>("/tunnel/list");
 export const getTunnelById = (id: number) =>
   Network.post<TunnelApiItem>("/tunnel/get", { id });
 export const updateTunnel = (data: TunnelMutationPayload) =>
-  Network.post("/tunnel/update", data, { timeout: 120_000 });
+  Network.post("/tunnel/update", data, { timeout: 420_000 });
 export const deleteTunnel = (id: number) =>
   Network.post("/tunnel/delete", { id });
 export const previewTunnelDelete = (id: number) =>

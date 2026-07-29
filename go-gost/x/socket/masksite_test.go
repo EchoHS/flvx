@@ -118,7 +118,7 @@ func TestRunAcmeIssueCommandTreatsUnchangedCertificateAsSuccess(t *testing.T) {
 	}
 }
 
-func TestMaskAcmeEnvironmentUsesRootHomeAndCloudflareCredentials(t *testing.T) {
+func TestMaskAcmeEnvironmentUsesRootHomeWithoutCloudflareCredentials(t *testing.T) {
 	t.Setenv("HOME", "/")
 	t.Setenv("CF_Token", "stale-token")
 	env := maskAcmeEnvironment(maskSiteRequest{
@@ -126,11 +126,7 @@ func TestMaskAcmeEnvironmentUsesRootHomeAndCloudflareCredentials(t *testing.T) {
 		CloudflareZoneID:   "zone-id",
 	})
 
-	want := map[string]string{
-		"HOME":       maskRootHome,
-		"CF_Token":   "new-token",
-		"CF_Zone_ID": "zone-id",
-	}
+	want := map[string]string{"HOME": maskRootHome}
 	counts := make(map[string]int)
 	for _, item := range env {
 		for key, value := range want {
@@ -145,6 +141,11 @@ func TestMaskAcmeEnvironmentUsesRootHomeAndCloudflareCredentials(t *testing.T) {
 	for key := range want {
 		if counts[key] != 1 {
 			t.Fatalf("%s appears %d times in command environment, want 1", key, counts[key])
+		}
+	}
+	for _, item := range env {
+		if strings.HasPrefix(item, "CF_Token=") || strings.HasPrefix(item, "CF_Zone_ID=") {
+			t.Fatalf("Cloudflare credential leaked into acme.sh environment: %s", item)
 		}
 	}
 }

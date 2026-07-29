@@ -204,6 +204,7 @@ type TunnelMaskConfig struct {
 	InnerPort            int            `gorm:"column:inner_port;not null;default:24443"`
 	CloudflareEnabled    int            `gorm:"column:cloudflare_enabled;not null;default:0"`
 	CloudflareAPIToken   sql.NullString `gorm:"column:cloudflare_api_token;type:text"`
+	CloudflareAccountID  sql.NullString `gorm:"column:cloudflare_account_id;type:varchar(255)"`
 	CloudflareZoneID     sql.NullString `gorm:"column:cloudflare_zone_id;type:varchar(255)"`
 	CloudflareRecordName sql.NullString `gorm:"column:cloudflare_record_name;type:varchar(255)"`
 	Status               string         `gorm:"type:varchar(32);not null;default:'pending'"`
@@ -509,6 +510,7 @@ type TunnelMaskBackup struct {
 	ACMEEmail            string `json:"acmeEmail,omitempty"`
 	InnerPort            int    `json:"innerPort,omitempty"`
 	CloudflareEnabled    int    `json:"cloudflareEnabled,omitempty"`
+	CloudflareAccountID  string `json:"cloudflareAccountId,omitempty"`
 	CloudflareZoneID     string `json:"cloudflareZoneId,omitempty"`
 	CloudflareRecordName string `json:"cloudflareRecordName,omitempty"`
 	Status               string `json:"status,omitempty"`

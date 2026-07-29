@@ -1268,6 +1268,7 @@ func (r *Repository) ListTunnels() ([]map[string]interface{}, error) {
 				"acmeEmail":             m.ACMEEmail,
 				"innerPort":             m.InnerPort,
 				"cloudflareEnabled":     m.CloudflareEnabled,
+				"cloudflareAccountId":   nullableString(m.CloudflareAccountID),
 				"cloudflareZoneId":      nullableString(m.CloudflareZoneID),
 				"cloudflareRecordName":  nullableString(m.CloudflareRecordName),
 				"cloudflareApiTokenSet": m.CloudflareAPIToken.Valid && strings.TrimSpace(m.CloudflareAPIToken.String) != "",
@@ -2199,6 +2200,7 @@ func (r *Repository) exportTunnels() ([]model.TunnelBackup, error) {
 				ACMEEmail:            mask.ACMEEmail,
 				InnerPort:            mask.InnerPort,
 				CloudflareEnabled:    mask.CloudflareEnabled,
+				CloudflareAccountID:  mask.CloudflareAccountID.String,
 				CloudflareZoneID:     mask.CloudflareZoneID.String,
 				CloudflareRecordName: mask.CloudflareRecordName.String,
 				Status:               mask.Status,
@@ -2681,6 +2683,7 @@ func importTunnels(tx *gorm.DB, tunnels []model.TunnelBackup, now int64) (int, e
 				ACMEEmail:            t.MaskConfig.ACMEEmail,
 				InnerPort:            t.MaskConfig.InnerPort,
 				CloudflareEnabled:    t.MaskConfig.CloudflareEnabled,
+				CloudflareAccountID:  sql.NullString{String: t.MaskConfig.CloudflareAccountID, Valid: t.MaskConfig.CloudflareAccountID != ""},
 				CloudflareZoneID:     sql.NullString{String: t.MaskConfig.CloudflareZoneID, Valid: t.MaskConfig.CloudflareZoneID != ""},
 				CloudflareRecordName: sql.NullString{String: t.MaskConfig.CloudflareRecordName, Valid: t.MaskConfig.CloudflareRecordName != ""},
 				Status:               t.MaskConfig.Status,
@@ -2692,7 +2695,7 @@ func importTunnels(tx *gorm.DB, tunnels []model.TunnelBackup, now int64) (int, e
 				Columns: []clause.Column{{Name: "tunnel_id"}},
 				DoUpdates: clause.AssignmentColumns([]string{
 					"enabled", "domain", "ws_path", "site_repo", "site_dir", "acme_email", "inner_port",
-					"cloudflare_enabled", "cloudflare_zone_id", "cloudflare_record_name", "status", "last_error", "updated_time",
+					"cloudflare_enabled", "cloudflare_account_id", "cloudflare_zone_id", "cloudflare_record_name", "status", "last_error", "updated_time",
 				}),
 			}).Create(&mask).Error; err != nil {
 				return count, err

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,24 +36,39 @@ type maskSiteRequest struct {
 	InnerPort            int    `json:"innerPort"`
 	PublicPort           int    `json:"publicPort"`
 	PublicIP             string `json:"publicIP"`
+	PublicIPSource       string `json:"publicIPSource,omitempty"`
 	CloudflareEnabled    int    `json:"cloudflareEnabled"`
 	CloudflareAPIToken   string `json:"cloudflareApiToken"`
+	CloudflareAccountID  string `json:"cloudflareAccountId"`
 	CloudflareZoneID     string `json:"cloudflareZoneId"`
 	CloudflareRecordName string `json:"cloudflareRecordName"`
 }
 
 type maskSiteState struct {
-	TunnelID   int64  `json:"tunnelId"`
-	Domain     string `json:"domain"`
-	WSPath     string `json:"wsPath"`
-	SiteDir    string `json:"siteDir"`
-	InnerPort  int    `json:"innerPort"`
-	PublicPort int    `json:"publicPort"`
-	PublicIP   string `json:"publicIP"`
-	UpdatedAt  int64  `json:"updatedAt"`
+	TunnelID             int64  `json:"tunnelId"`
+	Domain               string `json:"domain"`
+	WSPath               string `json:"wsPath"`
+	SiteRepo             string `json:"siteRepo"`
+	SiteDir              string `json:"siteDir"`
+	ACMEEmail            string `json:"acmeEmail"`
+	InnerPort            int    `json:"innerPort"`
+	PublicPort           int    `json:"publicPort"`
+	PublicIP             string `json:"publicIP"`
+	PublicIPSource       string `json:"publicIPSource"`
+	CloudflareEnabled    int    `json:"cloudflareEnabled"`
+	CloudflareAPIToken   string `json:"cloudflareApiToken"`
+	CloudflareAccountID  string `json:"cloudflareAccountId"`
+	CloudflareZoneID     string `json:"cloudflareZoneId"`
+	CloudflareRecordName string `json:"cloudflareRecordName"`
+	UpdatedAt            int64  `json:"updatedAt"`
 }
 
+var maskSiteMu sync.Mutex
+
 func (w *WebSocketReporter) handleConfigureMaskSite(data interface{}) error {
+	maskSiteMu.Lock()
+	defer maskSiteMu.Unlock()
+
 	var req maskSiteRequest
 	if err := decodeCommandData(data, &req); err != nil {
 		return err
@@ -61,10 +77,17 @@ func (w *WebSocketReporter) handleConfigureMaskSite(data interface{}) error {
 	if err := req.validate(); err != nil {
 		return err
 	}
-	if req.CloudflareEnabled == 1 || strings.TrimSpace(req.CloudflareAPIToken) != "" {
-		if err := configureCloudflareRecord(req); err != nil {
+	if req.usesCloudflare() {
+		publicIP, err := resolveMaskPublicIPv4(req.PublicIPSource)
+		if err != nil {
 			return err
 		}
+		req.PublicIP = publicIP
+		zoneID, err := configureCloudflareRecord(req)
+		if err != nil {
+			return err
+		}
+		req.CloudflareZoneID = zoneID
 	}
 	if err := installMaskDependencies(); err != nil {
 		return err
@@ -72,8 +95,14 @@ func (w *WebSocketReporter) handleConfigureMaskSite(data interface{}) error {
 	if err := prepareMaskSite(req); err != nil {
 		return err
 	}
-	if err := ensureAcme(req); err != nil {
-		return err
+	if req.usesCloudflare() {
+		if err := ensureNativeCloudflareCertificate(req); err != nil {
+			return err
+		}
+	} else {
+		if err := ensureAcme(req); err != nil {
+			return err
+		}
 	}
 	if err := writeMaskNginxConfig(req); err != nil {
 		return err
@@ -85,6 +114,9 @@ func (w *WebSocketReporter) handleConfigureMaskSite(data interface{}) error {
 }
 
 func (w *WebSocketReporter) handleRemoveMaskSite(data interface{}) error {
+	maskSiteMu.Lock()
+	defer maskSiteMu.Unlock()
+
 	var req struct {
 		TunnelID int64 `json:"tunnelId"`
 	}
@@ -112,6 +144,9 @@ func decodeCommandData(data interface{}, dst interface{}) error {
 
 func (r *maskSiteRequest) normalize() {
 	r.Domain = strings.TrimSpace(r.Domain)
+	if strings.TrimSpace(r.PublicIPSource) == "" {
+		r.PublicIPSource = strings.TrimSpace(r.PublicIP)
+	}
 	if !strings.HasPrefix(r.WSPath, "/") {
 		r.WSPath = "/" + strings.TrimSpace(r.WSPath)
 	}
@@ -139,6 +174,12 @@ func (r *maskSiteRequest) normalize() {
 	if strings.TrimSpace(r.CloudflareRecordName) == "" {
 		r.CloudflareRecordName = r.Domain
 	}
+	r.CloudflareAccountID = strings.TrimSpace(r.CloudflareAccountID)
+	r.CloudflareZoneID = strings.TrimSpace(r.CloudflareZoneID)
+}
+
+func (r maskSiteRequest) usesCloudflare() bool {
+	return r.CloudflareEnabled == 1 || strings.TrimSpace(r.CloudflareAPIToken) != ""
 }
 
 func (r maskSiteRequest) validate() error {
@@ -157,7 +198,7 @@ func (r maskSiteRequest) validate() error {
 	if r.PublicPort == 80 && strings.TrimSpace(r.CloudflareAPIToken) == "" {
 		return errors.New("publicPort 80 requires Cloudflare DNS certificate issuance")
 	}
-	if r.CloudflareEnabled == 1 || strings.TrimSpace(r.CloudflareAPIToken) != "" {
+	if r.usesCloudflare() {
 		if strings.TrimSpace(r.CloudflareAPIToken) == "" {
 			return errors.New("cloudflare api token is required")
 		}
@@ -195,6 +236,9 @@ func prepareMaskSite(req maskSiteRequest) error {
 }
 
 func ensureAcme(req maskSiteRequest) error {
+	if req.usesCloudflare() {
+		return errors.New("acme.sh must not be used for Cloudflare DNS certificate issuance")
+	}
 	acme := maskAcmeScript
 	acmeEnv := maskAcmeEnvironment(req)
 	if _, err := os.Stat(acme); err != nil {
@@ -203,7 +247,7 @@ func ensureAcme(req maskSiteRequest) error {
 			return err
 		}
 		defer os.Remove(installer)
-		if err := runCommandEnv(acmeEnv, "sh", installer, "email="+defaultACMEEmail(req.ACMEEmail)); err != nil {
+		if err := runCommandEnv(acmeEnv, "sh", installer, "email="+defaultACMEEmail(req.ACMEEmail, req.Domain)); err != nil {
 			return err
 		}
 	}
@@ -219,24 +263,23 @@ func ensureAcme(req maskSiteRequest) error {
 			return fmt.Errorf("make acme.sh executable: %w", err)
 		}
 	}
+	if email := strings.TrimSpace(req.ACMEEmail); email != "" {
+		if err := syncAcmeAccountEmail(acmeEnv, acme, email); err != nil {
+			return err
+		}
+	}
 	certDir := filepath.Join("/etc/nginx/ssl", req.Domain)
 	if err := os.MkdirAll(certDir, 0700); err != nil {
 		return err
 	}
-	if strings.TrimSpace(req.CloudflareAPIToken) != "" {
-		if err := runAcmeIssueCommand(acmeEnv, acme, "--issue", "--dns", "dns_cf", "-d", req.Domain, "--keylength", "ec-256", "--server", "letsencrypt"); err != nil {
-			return err
-		}
-	} else {
-		if err := writeHTTPOnlyNginx(req); err != nil {
-			return err
-		}
-		if err := runCommand("systemctl", "reload", "nginx"); err != nil {
-			return err
-		}
-		if err := runAcmeIssueCommand(acmeEnv, acme, "--issue", "-d", req.Domain, "-w", req.SiteDir, "--keylength", "ec-256", "--server", "letsencrypt"); err != nil {
-			return err
-		}
+	if err := writeHTTPOnlyNginx(req); err != nil {
+		return err
+	}
+	if err := runCommand("systemctl", "reload", "nginx"); err != nil {
+		return err
+	}
+	if err := runAcmeIssueCommand(acmeEnv, acme, "--issue", "-d", req.Domain, "-w", req.SiteDir, "--keylength", "ec-256", "--server", "letsencrypt"); err != nil {
+		return err
 	}
 	return runCommandEnv(acmeEnv, acme, "--install-cert", "-d", req.Domain, "--ecc",
 		"--fullchain-file", filepath.Join(certDir, "fullchain.pem"),
@@ -246,13 +289,17 @@ func ensureAcme(req maskSiteRequest) error {
 
 func maskAcmeEnvironment(req maskSiteRequest) []string {
 	env := setCommandEnvironment(os.Environ(), "HOME", maskRootHome)
-	if token := strings.TrimSpace(req.CloudflareAPIToken); token != "" {
-		env = setCommandEnvironment(env, "CF_Token", token)
+	return removeCommandEnvironment(env, "CF_Token", "CF_Zone_ID")
+}
+
+func syncAcmeAccountEmail(env []string, acme, email string) error {
+	if err := runCommandEnv(env, acme, "--update-account", "--accountemail", email, "--server", "letsencrypt"); err == nil {
+		return nil
 	}
-	if zoneID := strings.TrimSpace(req.CloudflareZoneID); zoneID != "" {
-		env = setCommandEnvironment(env, "CF_Zone_ID", zoneID)
+	if err := runCommandEnv(env, acme, "--register-account", "-m", email, "--server", "letsencrypt"); err != nil {
+		return fmt.Errorf("update acme.sh account email: %w", err)
 	}
-	return env
+	return nil
 }
 
 func setCommandEnvironment(env []string, key, value string) []string {
@@ -264,6 +311,27 @@ func setCommandEnvironment(env []string, key, value string) []string {
 		}
 	}
 	return append(out, prefix+value)
+}
+
+func removeCommandEnvironment(env []string, keys ...string) []string {
+	prefixes := make([]string, 0, len(keys))
+	for _, key := range keys {
+		prefixes = append(prefixes, key+"=")
+	}
+	out := make([]string, 0, len(env))
+	for _, item := range env {
+		remove := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(item, prefix) {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func writeHTTPOnlyNginx(req maskSiteRequest) error {
@@ -360,14 +428,22 @@ func writeMaskState(req maskSiteRequest) error {
 		return err
 	}
 	state := maskSiteState{
-		TunnelID:   req.TunnelID,
-		Domain:     req.Domain,
-		WSPath:     req.WSPath,
-		SiteDir:    req.SiteDir,
-		InnerPort:  req.InnerPort,
-		PublicPort: req.PublicPort,
-		PublicIP:   req.PublicIP,
-		UpdatedAt:  time.Now().Unix(),
+		TunnelID:             req.TunnelID,
+		Domain:               req.Domain,
+		WSPath:               req.WSPath,
+		SiteRepo:             req.SiteRepo,
+		SiteDir:              req.SiteDir,
+		ACMEEmail:            req.ACMEEmail,
+		InnerPort:            req.InnerPort,
+		PublicPort:           req.PublicPort,
+		PublicIP:             req.PublicIP,
+		PublicIPSource:       req.PublicIPSource,
+		CloudflareEnabled:    req.CloudflareEnabled,
+		CloudflareAPIToken:   req.CloudflareAPIToken,
+		CloudflareAccountID:  req.CloudflareAccountID,
+		CloudflareZoneID:     req.CloudflareZoneID,
+		CloudflareRecordName: req.CloudflareRecordName,
+		UpdatedAt:            time.Now().Unix(),
 	}
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -376,22 +452,21 @@ func writeMaskState(req maskSiteRequest) error {
 	return os.WriteFile(filepath.Join(maskStateRoot, fmt.Sprintf("tunnel-%d.json", req.TunnelID)), b, 0600)
 }
 
-func configureCloudflareRecord(req maskSiteRequest) error {
-	zoneID := strings.TrimSpace(req.CloudflareZoneID)
-	if zoneID == "" {
-		var err error
-		zoneID, err = lookupCloudflareZone(req)
-		if err != nil {
-			return err
-		}
+func configureCloudflareRecord(req maskSiteRequest) (string, error) {
+	if err := verifyCloudflareToken(req); err != nil {
+		return "", err
+	}
+	zone, err := resolveCloudflareZone(req)
+	if err != nil {
+		return "", err
 	}
 	recordName := strings.TrimSpace(req.CloudflareRecordName)
 	if recordName == "" {
 		recordName = req.Domain
 	}
-	recordID, err := lookupCloudflareRecord(req, zoneID, recordName)
+	recordID, err := lookupCloudflareRecord(req, zone.ID, recordName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	body := map[string]interface{}{
 		"type":    "A",
@@ -401,26 +476,93 @@ func configureCloudflareRecord(req maskSiteRequest) error {
 		"proxied": false,
 	}
 	if recordID == "" {
-		return cloudflareRequest(req, http.MethodPost, fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zoneID), body, nil)
+		err = cloudflareRequest(req, http.MethodPost, cloudflareAPIURL("/zones/%s/dns_records", zone.ID), body, nil)
+	} else {
+		err = cloudflareRequest(req, http.MethodPut, cloudflareAPIURL("/zones/%s/dns_records/%s", zone.ID, recordID), body, nil)
 	}
-	return cloudflareRequest(req, http.MethodPut, fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, recordID), body, nil)
+	if err != nil {
+		return "", err
+	}
+	return zone.ID, nil
 }
 
-func lookupCloudflareZone(req maskSiteRequest) (string, error) {
+type cloudflareZone struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Account struct {
+		ID string `json:"id"`
+	} `json:"account"`
+}
+
+func verifyCloudflareToken(req maskSiteRequest) error {
+	var tokenInfo struct {
+		Result struct {
+			Status string `json:"status"`
+		} `json:"result"`
+	}
+	err := cloudflareRequest(req, http.MethodGet, cloudflareAPIURL("/user/tokens/verify"), nil, &tokenInfo)
+	if err != nil && strings.TrimSpace(req.CloudflareAccountID) != "" {
+		err = cloudflareRequest(req, http.MethodGet, cloudflareAPIURL("/accounts/%s/tokens/verify", req.CloudflareAccountID), nil, &tokenInfo)
+	}
+	if err != nil {
+		return fmt.Errorf("Cloudflare API Token 验证失败: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(tokenInfo.Result.Status), "active") {
+		return fmt.Errorf("Cloudflare API Token 状态不是 active: %s", tokenInfo.Result.Status)
+	}
+	return nil
+}
+
+func resolveCloudflareZone(req maskSiteRequest) (cloudflareZone, error) {
+	if zoneID := strings.TrimSpace(req.CloudflareZoneID); zoneID != "" {
+		var res struct {
+			Result cloudflareZone `json:"result"`
+		}
+		if err := cloudflareRequest(req, http.MethodGet, cloudflareAPIURL("/zones/%s", zoneID), nil, &res); err != nil {
+			return cloudflareZone{}, fmt.Errorf("Cloudflare Zone ID 验证失败: %w", err)
+		}
+		if err := validateCloudflareZone(req, res.Result); err != nil {
+			return cloudflareZone{}, err
+		}
+		return res.Result, nil
+	}
+
 	parts := strings.Split(req.Domain, ".")
 	for i := 0; i < len(parts)-1; i++ {
 		name := strings.Join(parts[i:], ".")
 		var res struct {
-			Result []struct {
-				ID string `json:"id"`
-			} `json:"result"`
+			Result []cloudflareZone `json:"result"`
 		}
-		err := cloudflareRequest(req, http.MethodGet, "https://api.cloudflare.com/client/v4/zones?name="+neturl.QueryEscape(name), nil, &res)
-		if err == nil && len(res.Result) > 0 && res.Result[0].ID != "" {
-			return res.Result[0].ID, nil
+		query := "?name=" + neturl.QueryEscape(name)
+		if accountID := strings.TrimSpace(req.CloudflareAccountID); accountID != "" {
+			query += "&account.id=" + neturl.QueryEscape(accountID)
+		}
+		if err := cloudflareRequest(req, http.MethodGet, cloudflareAPIURL("/zones")+query, nil, &res); err != nil {
+			return cloudflareZone{}, fmt.Errorf("Cloudflare Zone 查询失败（Token 需要 Zone Read 权限）: %w", err)
+		}
+		if len(res.Result) > 0 && res.Result[0].ID != "" {
+			if err := validateCloudflareZone(req, res.Result[0]); err != nil {
+				return cloudflareZone{}, err
+			}
+			return res.Result[0], nil
 		}
 	}
-	return "", errors.New("cloudflare zone not found")
+	return cloudflareZone{}, fmt.Errorf("Cloudflare 中未找到域名 %s 对应的 Zone；请检查 Token 资源范围、Account ID 和 Zone ID", req.Domain)
+}
+
+func validateCloudflareZone(req maskSiteRequest, zone cloudflareZone) error {
+	if strings.TrimSpace(zone.ID) == "" || strings.TrimSpace(zone.Name) == "" {
+		return errors.New("Cloudflare Zone 响应缺少 ID 或名称")
+	}
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(req.Domain), "."))
+	zoneName := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zone.Name), "."))
+	if domain != zoneName && !strings.HasSuffix(domain, "."+zoneName) {
+		return fmt.Errorf("Cloudflare Zone %s 不包含伪装域名 %s", zone.Name, req.Domain)
+	}
+	if accountID := strings.TrimSpace(req.CloudflareAccountID); accountID != "" && zone.Account.ID != accountID {
+		return fmt.Errorf("Cloudflare Zone %s 不属于填写的 Account ID", zone.Name)
+	}
+	return nil
 }
 
 func lookupCloudflareRecord(req maskSiteRequest, zoneID, name string) (string, error) {
@@ -429,7 +571,7 @@ func lookupCloudflareRecord(req maskSiteRequest, zoneID, name string) (string, e
 			ID string `json:"id"`
 		} `json:"result"`
 	}
-	err := cloudflareRequest(req, http.MethodGet, fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?type=A&name=%s", neturl.PathEscape(zoneID), neturl.QueryEscape(name)), nil, &res)
+	err := cloudflareRequest(req, http.MethodGet, cloudflareAPIURL("/zones/%s/dns_records", neturl.PathEscape(zoneID))+"?type=A&name="+neturl.QueryEscape(name), nil, &res)
 	if err != nil {
 		return "", err
 	}
@@ -456,19 +598,64 @@ func cloudflareRequest(req maskSiteRequest, method, url string, body interface{}
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+req.CloudflareAPIToken)
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := cloudflareHTTPClient.Do(httpReq)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("cloudflare api failed: %s", strings.TrimSpace(string(b)))
+		return fmt.Errorf("Cloudflare API 返回 HTTP %d: %s", resp.StatusCode, cloudflareErrorText(b))
+	}
+	var status struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(b, &status); err != nil {
+		return fmt.Errorf("解析 Cloudflare API 响应失败: %w", err)
+	}
+	if !status.Success {
+		return fmt.Errorf("Cloudflare API 请求失败: %s", cloudflareErrorText(b))
 	}
 	if dst != nil {
 		return json.Unmarshal(b, dst)
 	}
 	return nil
+}
+
+var cloudflareAPIBaseURL = "https://api.cloudflare.com/client/v4"
+var cloudflareHTTPClient = http.DefaultClient
+
+func cloudflareAPIURL(format string, args ...interface{}) string {
+	return strings.TrimRight(cloudflareAPIBaseURL, "/") + fmt.Sprintf(format, args...)
+}
+
+func cloudflareErrorText(body []byte) string {
+	var envelope struct {
+		Errors []struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"errors"`
+		Messages []struct {
+			Message string `json:"message"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(body, &envelope) == nil {
+		parts := make([]string, 0, len(envelope.Errors)+len(envelope.Messages))
+		for _, item := range envelope.Errors {
+			parts = append(parts, fmt.Sprintf("%d: %s", item.Code, item.Message))
+		}
+		for _, item := range envelope.Messages {
+			parts = append(parts, item.Message)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "; ")
+		}
+	}
+	text := strings.TrimSpace(string(body))
+	if len(text) > 500 {
+		text = text[:500] + "..."
+	}
+	return text
 }
 
 func runCommand(name string, args ...string) error {
@@ -505,9 +692,9 @@ func runAcmeIssueCommand(env []string, name string, args ...string) error {
 	return fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, text)
 }
 
-func defaultACMEEmail(v string) string {
+func defaultACMEEmail(v, domain string) string {
 	if strings.TrimSpace(v) == "" {
-		return "admin@example.com"
+		return "admin@" + strings.TrimSpace(domain)
 	}
 	return strings.TrimSpace(v)
 }

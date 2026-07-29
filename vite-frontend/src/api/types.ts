@@ -374,6 +374,7 @@ export interface TunnelMaskConfigPayload {
   cloudflareEnabled?: number;
   cloudflareApiToken?: string;
   cloudflareApiTokenSet?: boolean;
+  cloudflareAccountId?: string;
   cloudflareZoneId?: string;
   cloudflareRecordName?: string;
 }
