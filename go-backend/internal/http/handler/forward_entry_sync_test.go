@@ -44,6 +44,35 @@ func TestSyncForwardServicesOnNodesReturnsAgentFailure(t *testing.T) {
 	}
 }
 
+func TestNodeOnlineRedeployUpdatesChainBeforeUpdatingSelectedEntry(t *testing.T) {
+	h, _ := setupForwardEntryRuntimeSyncTest(t)
+	type commandCall struct {
+		nodeID  int64
+		command string
+	}
+	var calls []commandCall
+	h.nodeCommandHook = func(nodeID int64, commandType string, _ interface{}, _ time.Duration) (ws.CommandResult, error) {
+		calls = append(calls, commandCall{nodeID: nodeID, command: commandType})
+		return ws.CommandResult{Success: true}, nil
+	}
+
+	if err := h.redeployTunnelAndForwardsOnNode(50, 20); err != nil {
+		t.Fatalf("redeploy selected entry: %v", err)
+	}
+	want := []commandCall{
+		{nodeID: 20, command: "UpdateChains"},
+		{nodeID: 20, command: "UpdateService"},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("unexpected node recovery commands: got %#v want %#v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("unexpected command %d: got %#v want %#v", i, calls[i], want[i])
+		}
+	}
+}
+
 func setupForwardEntryRuntimeSyncTest(t *testing.T) (*Handler, *forwardRecord) {
 	t.Helper()
 	r, err := repo.Open(filepath.Join(t.TempDir(), "panel.db"))
@@ -61,8 +90,9 @@ func setupForwardEntryRuntimeSyncTest(t *testing.T) (*Handler, *forwardRecord) {
 		INSERT INTO node(id, name, secret, server_ip, port, created_time, status, tcp_listen_addr, udp_listen_addr, is_remote, forward_mode)
 		VALUES
 			(10, 'entry-a', 'secret-a', '10.0.0.10', '12000-12010', ?, 1, '[::]', '[::]', 0, 'gost'),
-			(20, 'entry-b', 'secret-b', '10.0.0.20', '12000-12010', ?, 1, '[::]', '[::]', 0, 'gost')
-	`, now, now).Error; err != nil {
+			(20, 'entry-b', 'secret-b', '10.0.0.20', '12000-12010', ?, 1, '[::]', '[::]', 0, 'gost'),
+			(30, 'exit', 'secret-c', '10.0.0.30', '24443', ?, 1, '[::]', '[::]', 0, 'gost')
+	`, now, now, now).Error; err != nil {
 		t.Fatalf("insert nodes: %v", err)
 	}
 	if err := r.DB().Exec(`
@@ -75,7 +105,8 @@ func setupForwardEntryRuntimeSyncTest(t *testing.T) (*Handler, *forwardRecord) {
 		INSERT INTO chain_tunnel(tunnel_id, chain_type, node_id, port, strategy, inx, protocol)
 		VALUES
 			(50, '1', 10, 24443, 'round', 1, 'mwss'),
-			(50, '1', 20, 24443, 'round', 2, 'mwss')
+			(50, '1', 20, 24443, 'round', 2, 'mwss'),
+			(50, '3', 30, 24443, 'round', 3, 'mwss')
 	`).Error; err != nil {
 		t.Fatalf("insert chain nodes: %v", err)
 	}

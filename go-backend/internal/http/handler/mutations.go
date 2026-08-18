@@ -4259,7 +4259,7 @@ func (h *Handler) applyTunnelRuntimeDiff(oldState, newState *tunnelCreateState) 
 		if !newPlan.applyChains[nodeID] {
 			continue
 		}
-		if err := h.replaceTunnelChainOnNode(nodeID, chainData, oldChain); err != nil {
+		if err := h.updateTunnelChainOnNode(nodeID, chainData); err != nil {
 			if existed && shouldDeferTunnelRuntimeApplyError(err) {
 				continue
 			}
@@ -4306,7 +4306,7 @@ func (h *Handler) applyTunnelRuntimeOnNode(state *tunnelCreateState, nodeID int6
 		return err
 	}
 	if chainData, ok := plan.chains[nodeID]; ok && plan.applyChains[nodeID] {
-		if err := h.replaceTunnelChainOnNode(nodeID, chainData, nil); err != nil {
+		if err := h.updateTunnelChainOnNode(nodeID, chainData); err != nil {
 			return fmt.Errorf("节点 %s 恢复转发链失败: %w", nodeDisplayName(state.Nodes[nodeID]), err)
 		}
 	}
@@ -4323,24 +4323,12 @@ func (h *Handler) applyTunnelRuntimeOnNode(state *tunnelCreateState, nodeID int6
 	return nil
 }
 
-func (h *Handler) replaceTunnelChainOnNode(nodeID int64, chainData, rollbackData map[string]interface{}) error {
+func (h *Handler) updateTunnelChainOnNode(nodeID int64, chainData map[string]interface{}) error {
 	chainName := strings.TrimSpace(asString(chainData["name"]))
 	if chainName == "" {
 		return errors.New("转发链名称不能为空")
 	}
-	if _, err := h.sendNodeCommand(nodeID, "DeleteChains", map[string]interface{}{"chain": chainName}, false, true); err != nil {
-		return err
-	}
-	if _, err := h.sendNodeCommand(nodeID, "AddChains", chainData, false, false); err != nil {
-		if rollbackData == nil {
-			return err
-		}
-		if _, rollbackErr := h.sendNodeCommand(nodeID, "AddChains", rollbackData, true, false); rollbackErr != nil {
-			return fmt.Errorf("%v; 恢复原转发链失败: %w", err, rollbackErr)
-		}
-		return err
-	}
-	return nil
+	return h.upsertTunnelChainOnNode(nodeID, chainData)
 }
 
 func (h *Handler) applyTunnelRuntimeWithMode(state *tunnelCreateState, upsert bool) ([]int64, []int64, error) {

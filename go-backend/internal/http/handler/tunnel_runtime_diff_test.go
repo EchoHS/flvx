@@ -27,14 +27,11 @@ func TestApplyTunnelRuntimeDiffOnlyDeploysAddedEntry(t *testing.T) {
 		t.Fatalf("apply diff: %v", err)
 	}
 
-	if len(calls) != 2 {
-		t.Fatalf("expected only delete/add on new entry, got %#v", calls)
+	if len(calls) != 1 {
+		t.Fatalf("expected one atomic chain update on new entry, got %#v", calls)
 	}
-	if calls[0].nodeID != 20 || calls[0].name != "DeleteChains" {
+	if calls[0].nodeID != 20 || calls[0].name != "UpdateChains" {
 		t.Fatalf("unexpected first command: %#v", calls[0])
-	}
-	if calls[1].nodeID != 20 || calls[1].name != "AddChains" {
-		t.Fatalf("unexpected second command: %#v", calls[1])
 	}
 }
 
@@ -59,17 +56,14 @@ func TestApplyTunnelRuntimeDiffUpdatesChangedChainAndServiceOnly(t *testing.T) {
 		t.Fatalf("apply diff: %v", err)
 	}
 
-	if len(calls) != 3 {
+	if len(calls) != 2 {
 		t.Fatalf("expected changed entry chain and exit service, got %#v", calls)
 	}
-	if calls[0].nodeID != 10 || calls[0].name != "DeleteChains" {
-		t.Fatalf("unexpected chain delete: %#v", calls[0])
+	if calls[0].nodeID != 10 || calls[0].name != "UpdateChains" {
+		t.Fatalf("unexpected chain update: %#v", calls[0])
 	}
-	if calls[1].nodeID != 10 || calls[1].name != "AddChains" {
-		t.Fatalf("unexpected chain add: %#v", calls[1])
-	}
-	if calls[2].nodeID != 30 || calls[2].name != "UpdateService" {
-		t.Fatalf("unexpected exit service update: %#v", calls[2])
+	if calls[1].nodeID != 30 || calls[1].name != "UpdateService" {
+		t.Fatalf("unexpected exit service update: %#v", calls[1])
 	}
 }
 
@@ -90,8 +84,28 @@ func TestApplyTunnelRuntimeOnNodeOnlyRebuildsSelectedEntry(t *testing.T) {
 	if err := h.applyTunnelRuntimeOnNode(testTunnelRuntimeState([]int64{10, 20}), 20); err != nil {
 		t.Fatalf("apply node runtime: %v", err)
 	}
-	if len(calls) != 2 || calls[0].nodeID != 20 || calls[0].name != "DeleteChains" || calls[1].nodeID != 20 || calls[1].name != "AddChains" {
-		t.Fatalf("expected only selected entry chain rebuild, got %#v", calls)
+	if len(calls) != 1 || calls[0].nodeID != 20 || calls[0].name != "UpdateChains" {
+		t.Fatalf("expected only selected entry atomic chain update, got %#v", calls)
+	}
+}
+
+func TestUpdateTunnelChainNeverDeletesLiveChain(t *testing.T) {
+	h := &Handler{}
+	var calls []string
+	h.nodeCommandHook = func(_ int64, commandType string, data interface{}, _ time.Duration) (ws.CommandResult, error) {
+		calls = append(calls, commandType)
+		payload, ok := data.(map[string]interface{})
+		if !ok || payload["chain"] != "chains_70" || payload["data"] == nil {
+			t.Fatalf("unexpected update payload: %#v", data)
+		}
+		return ws.CommandResult{Success: true}, nil
+	}
+
+	if err := h.updateTunnelChainOnNode(10, map[string]interface{}{"name": "chains_70"}); err != nil {
+		t.Fatalf("update chain: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "UpdateChains" {
+		t.Fatalf("live chain update must be atomic, got commands %v", calls)
 	}
 }
 
