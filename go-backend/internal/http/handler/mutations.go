@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1100,6 +1101,8 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 		response.WriteJSON(w, response.ErrDefault("隧道ID不能为空"))
 		return
 	}
+	unlockRuntime := h.lockTunnelRuntime(id)
+	defer unlockRuntime()
 	typeVal := asInt(req["type"], 1)
 	ipPreference := asString(req["ipPreference"])
 	_, hasProbeTargetHost := req["probeTargetHost"]
@@ -1126,6 +1129,15 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	oldChainRows, _ := h.listChainNodesForTunnel(id)
 	oldMaskConfig, _ := h.repo.GetTunnelMaskConfig(id)
+	var oldRuntimeState *tunnelCreateState
+	if oldTunnel != nil && oldTunnel.Type == 2 {
+		var reconstructErr error
+		oldRuntimeState, reconstructErr = h.reconstructTunnelState(id)
+		if reconstructErr != nil {
+			response.WriteJSON(w, response.ErrDefault(fmt.Sprintf("读取原隧道运行配置失败: %v", reconstructErr)))
+			return
+		}
+	}
 	if oldTunnel != nil && oldTunnel.Type == 2 && typeVal != 2 {
 		h.cleanupTunnelRuntime(id)
 	}
@@ -1141,6 +1153,15 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	runtimeState.TunnelID = id
 	runtimeState.IPPreference = ipPreference
+	if runtimeState.MaskConfig == nil && oldMaskConfig != nil {
+		preservedMask := *oldMaskConfig
+		runtimeState.MaskConfig = &preservedMask
+		if preservedMask.Enabled == 1 {
+			for i := range runtimeState.OutNodes {
+				runtimeState.OutNodes[i].Mask = &preservedMask
+			}
+		}
+	}
 	entryNodeIDs := make([]int64, 0, len(runtimeState.InNodes))
 	for _, inNode := range runtimeState.InNodes {
 		if inNode.NodeID > 0 {
@@ -1248,7 +1269,9 @@ func (h *Handler) tunnelUpdate(w http.ResponseWriter, r *http.Request) {
 	if typeVal == 2 {
 		applyRuntime := h.applyTunnelRuntime
 		if oldTunnel != nil && oldTunnel.Type == 2 {
-			applyRuntime = h.applyTunnelRuntimeUpsert
+			applyRuntime = func(state *tunnelCreateState) ([]int64, []int64, error) {
+				return h.applyTunnelRuntimeDiff(oldRuntimeState, state)
+			}
 		}
 		createdChains, createdServices, applyErr := applyRuntime(runtimeState)
 		if applyErr != nil {
@@ -1797,6 +1820,11 @@ func (h *Handler) reconstructTunnelState(tunnelID int64) (*tunnelCreateState, er
 		Nodes:        make(map[int64]*nodeRecord),
 		NodeIDList:   make([]int64, 0),
 	}
+	maskConfig, err := h.repo.GetTunnelMaskConfig(tunnelID)
+	if err != nil {
+		return nil, err
+	}
+	state.MaskConfig = maskConfig
 
 	inNodes, chainHops, outNodes := splitChainNodeGroups(chainRows)
 
@@ -1811,6 +1839,10 @@ func (h *Handler) reconstructTunnelState(tunnelID int64) (*tunnelCreateState, er
 	}
 
 	for _, r := range outNodes {
+		var mask *model.TunnelMaskConfig
+		if maskConfig != nil && maskConfig.Enabled == 1 {
+			mask = maskConfig
+		}
 		state.OutNodes = append(state.OutNodes, tunnelRuntimeNode{
 			NodeID:    r.NodeID,
 			Protocol:  r.Protocol,
@@ -1818,6 +1850,7 @@ func (h *Handler) reconstructTunnelState(tunnelID int64) (*tunnelCreateState, er
 			ChainType: 3,
 			Port:      r.Port,
 			ConnectIP: r.ConnectIP,
+			Mask:      mask,
 		})
 		state.NodeIDList = append(state.NodeIDList, r.NodeID)
 	}
@@ -1856,6 +1889,12 @@ func (h *Handler) reconstructTunnelState(tunnelID int64) (*tunnelCreateState, er
 }
 
 func (h *Handler) redeployTunnelAndForwards(tunnelID int64) error {
+	unlockRuntime := h.lockTunnelRuntime(tunnelID)
+	defer unlockRuntime()
+	return h.redeployTunnelAndForwardsUnlocked(tunnelID)
+}
+
+func (h *Handler) redeployTunnelAndForwardsUnlocked(tunnelID int64) error {
 	tunnel, err := h.getTunnelRecord(tunnelID)
 	if err != nil {
 		return err
@@ -1904,6 +1943,52 @@ func (h *Handler) redeployTunnelAndForwards(tunnelID int64) error {
 		}
 	}
 
+	return nil
+}
+
+func (h *Handler) redeployTunnelAndForwardsOnNode(tunnelID, nodeID int64) error {
+	unlockRuntime := h.lockTunnelRuntime(tunnelID)
+	defer unlockRuntime()
+
+	tunnel, err := h.getTunnelRecord(tunnelID)
+	if err != nil {
+		return err
+	}
+	if tunnel.Type == 2 {
+		state, stateErr := h.reconstructTunnelState(tunnelID)
+		if stateErr != nil {
+			return stateErr
+		}
+		if applyErr := h.applyTunnelRuntimeOnNode(state, nodeID); applyErr != nil {
+			return applyErr
+		}
+	}
+
+	forwards, err := h.listForwardsByTunnel(tunnelID)
+	if err != nil {
+		return err
+	}
+	for i := range forwards {
+		forwardPorts, portsErr := h.listForwardPorts(forwards[i].ID)
+		if portsErr != nil {
+			return portsErr
+		}
+		hasNodePort := false
+		for _, port := range forwardPorts {
+			if port.NodeID == nodeID {
+				hasNodePort = true
+				break
+			}
+		}
+		// Middle and exit nodes belong to the tunnel but do not own the
+		// forward's entry listener. Only restore a forward on its entry node.
+		if !hasNodePort {
+			continue
+		}
+		if _, syncErr := h.syncForwardServicesOnNodesWithWarnings(&forwards[i], "UpdateService", true, []int64{nodeID}); syncErr != nil {
+			return syncErr
+		}
+	}
 	return nil
 }
 
@@ -4077,6 +4162,187 @@ func (h *Handler) applyTunnelRuntimeUpsert(state *tunnelCreateState) ([]int64, [
 	return h.applyTunnelRuntimeWithMode(state, true)
 }
 
+type tunnelMaskRuntimeSpec struct {
+	outNode tunnelRuntimeNode
+	payload map[string]interface{}
+}
+
+type tunnelRuntimePlan struct {
+	chains        map[int64]map[string]interface{}
+	services      map[int64][]map[string]interface{}
+	masks         map[int64]tunnelMaskRuntimeSpec
+	applyChains   map[int64]bool
+	applyServices map[int64]bool
+}
+
+func (h *Handler) buildTunnelRuntimePlan(state *tunnelCreateState) (*tunnelRuntimePlan, error) {
+	plan := &tunnelRuntimePlan{
+		chains:        make(map[int64]map[string]interface{}),
+		services:      make(map[int64][]map[string]interface{}),
+		masks:         make(map[int64]tunnelMaskRuntimeSpec),
+		applyChains:   make(map[int64]bool),
+		applyServices: make(map[int64]bool),
+	}
+	if state == nil || state.Type != 2 {
+		return plan, nil
+	}
+
+	for _, inNode := range state.InNodes {
+		targets := state.OutNodes
+		if len(state.ChainHops) > 0 {
+			targets = state.ChainHops[0]
+		} else {
+			targets = h.orderBestExitTargets(state.TunnelID, inNode.NodeID, targets)
+		}
+		chainData, err := buildTunnelChainConfig(state.TunnelID, inNode.NodeID, targets, state.Nodes, state.IPPreference)
+		if err != nil {
+			return nil, err
+		}
+		plan.chains[inNode.NodeID] = chainData
+		plan.applyChains[inNode.NodeID] = true
+	}
+
+	for i, hop := range state.ChainHops {
+		for _, chainNode := range hop {
+			nextTargets := state.OutNodes
+			if i+1 < len(state.ChainHops) {
+				nextTargets = state.ChainHops[i+1]
+			} else {
+				nextTargets = h.orderBestExitTargets(state.TunnelID, chainNode.NodeID, nextTargets)
+			}
+			chainData, err := buildTunnelChainConfig(state.TunnelID, chainNode.NodeID, nextTargets, state.Nodes, state.IPPreference)
+			if err != nil {
+				return nil, err
+			}
+			plan.chains[chainNode.NodeID] = chainData
+			plan.services[chainNode.NodeID] = buildTunnelChainServiceConfig(state.TunnelID, chainNode, state.Nodes[chainNode.NodeID], len(nextTargets))
+			node := state.Nodes[chainNode.NodeID]
+			apply := node == nil || (node.IsRemote != 1 && node.Status == 1)
+			plan.applyChains[chainNode.NodeID] = apply
+			plan.applyServices[chainNode.NodeID] = apply
+		}
+	}
+
+	for _, outNode := range state.OutNodes {
+		plan.services[outNode.NodeID] = buildTunnelChainServiceConfig(state.TunnelID, outNode, state.Nodes[outNode.NodeID], 1)
+		node := state.Nodes[outNode.NodeID]
+		apply := node == nil || (node.IsRemote != 1 && node.Status == 1)
+		plan.applyServices[outNode.NodeID] = apply
+		if apply && outNode.Mask != nil && outNode.Mask.Enabled == 1 {
+			plan.masks[outNode.NodeID] = tunnelMaskRuntimeSpec{
+				outNode: outNode,
+				payload: buildTunnelMaskSitePayload(outNode, node),
+			}
+		}
+	}
+
+	return plan, nil
+}
+
+func (h *Handler) applyTunnelRuntimeDiff(oldState, newState *tunnelCreateState) ([]int64, []int64, error) {
+	oldPlan, err := h.buildTunnelRuntimePlan(oldState)
+	if err != nil {
+		return nil, nil, err
+	}
+	newPlan, err := h.buildTunnelRuntimePlan(newState)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	createdChains := make([]int64, 0)
+	createdServices := make([]int64, 0)
+	for nodeID, chainData := range newPlan.chains {
+		oldChain, existed := oldPlan.chains[nodeID]
+		if existed && reflect.DeepEqual(oldChain, chainData) {
+			continue
+		}
+		if !newPlan.applyChains[nodeID] {
+			continue
+		}
+		if err := h.replaceTunnelChainOnNode(nodeID, chainData, oldChain); err != nil {
+			if existed && shouldDeferTunnelRuntimeApplyError(err) {
+				continue
+			}
+			return createdChains, createdServices, fmt.Errorf("节点 %s 下发转发链失败: %w", nodeDisplayName(newState.Nodes[nodeID]), err)
+		}
+		createdChains = append(createdChains, nodeID)
+	}
+
+	for nodeID, serviceData := range newPlan.services {
+		oldService, existed := oldPlan.services[nodeID]
+		if existed && reflect.DeepEqual(oldService, serviceData) {
+			continue
+		}
+		if !newPlan.applyServices[nodeID] {
+			continue
+		}
+		if err := h.addTunnelServiceOnNodeWithMode(nodeID, newState.TunnelID, serviceData, true); err != nil {
+			if existed && shouldDeferTunnelRuntimeApplyError(err) {
+				continue
+			}
+			return createdChains, createdServices, fmt.Errorf("节点 %s 下发隧道服务失败: %w", nodeDisplayName(newState.Nodes[nodeID]), err)
+		}
+		createdServices = append(createdServices, nodeID)
+	}
+
+	for nodeID, maskSpec := range newPlan.masks {
+		if oldMask, ok := oldPlan.masks[nodeID]; ok && reflect.DeepEqual(oldMask.payload, maskSpec.payload) {
+			continue
+		}
+		if err := h.configureTunnelMaskSite(nodeID, maskSpec.outNode, newState.Nodes[nodeID]); err != nil {
+			return createdChains, createdServices, fmt.Errorf("出口节点 %s 部署伪装站失败: %w", nodeDisplayName(newState.Nodes[nodeID]), err)
+		}
+	}
+
+	return createdChains, createdServices, nil
+}
+
+func (h *Handler) applyTunnelRuntimeOnNode(state *tunnelCreateState, nodeID int64) error {
+	if h == nil || state == nil || nodeID <= 0 || state.Type != 2 {
+		return nil
+	}
+	plan, err := h.buildTunnelRuntimePlan(state)
+	if err != nil {
+		return err
+	}
+	if chainData, ok := plan.chains[nodeID]; ok && plan.applyChains[nodeID] {
+		if err := h.replaceTunnelChainOnNode(nodeID, chainData, nil); err != nil {
+			return fmt.Errorf("节点 %s 恢复转发链失败: %w", nodeDisplayName(state.Nodes[nodeID]), err)
+		}
+	}
+	if serviceData, ok := plan.services[nodeID]; ok && plan.applyServices[nodeID] {
+		if err := h.addTunnelServiceOnNodeWithMode(nodeID, state.TunnelID, serviceData, true); err != nil {
+			return fmt.Errorf("节点 %s 恢复隧道服务失败: %w", nodeDisplayName(state.Nodes[nodeID]), err)
+		}
+	}
+	if maskSpec, ok := plan.masks[nodeID]; ok {
+		if err := h.configureTunnelMaskSite(nodeID, maskSpec.outNode, state.Nodes[nodeID]); err != nil {
+			return fmt.Errorf("出口节点 %s 恢复伪装站失败: %w", nodeDisplayName(state.Nodes[nodeID]), err)
+		}
+	}
+	return nil
+}
+
+func (h *Handler) replaceTunnelChainOnNode(nodeID int64, chainData, rollbackData map[string]interface{}) error {
+	chainName := strings.TrimSpace(asString(chainData["name"]))
+	if chainName == "" {
+		return errors.New("转发链名称不能为空")
+	}
+	if _, err := h.sendNodeCommand(nodeID, "DeleteChains", map[string]interface{}{"chain": chainName}, false, true); err != nil {
+		return err
+	}
+	if _, err := h.sendNodeCommand(nodeID, "AddChains", chainData, false, false); err != nil {
+		if rollbackData == nil {
+			return err
+		}
+		if _, rollbackErr := h.sendNodeCommand(nodeID, "AddChains", rollbackData, true, false); rollbackErr != nil {
+			return fmt.Errorf("%v; 恢复原转发链失败: %w", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
+}
+
 func (h *Handler) applyTunnelRuntimeWithMode(state *tunnelCreateState, upsert bool) ([]int64, []int64, error) {
 	if h == nil || state == nil {
 		return nil, nil, errors.New("invalid tunnel runtime state")
@@ -4169,6 +4435,20 @@ func (h *Handler) configureTunnelMaskSite(nodeID int64, outNode tunnelRuntimeNod
 	if h == nil || outNode.Mask == nil || outNode.Mask.Enabled != 1 {
 		return nil
 	}
+	payload := buildTunnelMaskSitePayload(outNode, node)
+	_, err := h.sendNodeCommandWithTimeout(nodeID, "ConfigureMaskSite", payload, 6*time.Minute, false, false)
+	if err != nil {
+		_ = h.repo.UpdateTunnelMaskStatus(outNode.Mask.TunnelID, "error", err.Error())
+		return err
+	}
+	_ = h.repo.UpdateTunnelMaskStatus(outNode.Mask.TunnelID, "active", "")
+	return nil
+}
+
+func buildTunnelMaskSitePayload(outNode tunnelRuntimeNode, node *nodeRecord) map[string]interface{} {
+	if outNode.Mask == nil {
+		return nil
+	}
 	publicIP := ""
 	if node != nil {
 		publicIP = pickNodeAddressV4(node)
@@ -4176,7 +4456,7 @@ func (h *Handler) configureTunnelMaskSite(nodeID int64, outNode tunnelRuntimeNod
 			publicIP = strings.TrimSpace(node.ServerIP)
 		}
 	}
-	payload := map[string]interface{}{
+	return map[string]interface{}{
 		"tunnelId":             outNode.Mask.TunnelID,
 		"domain":               outNode.Mask.Domain,
 		"wsPath":               normalizeMaskWSPath(outNode.Mask.WSPath),
@@ -4192,13 +4472,6 @@ func (h *Handler) configureTunnelMaskSite(nodeID int64, outNode tunnelRuntimeNod
 		"cloudflareZoneId":     outNode.Mask.CloudflareZoneID.String,
 		"cloudflareRecordName": outNode.Mask.CloudflareRecordName.String,
 	}
-	_, err := h.sendNodeCommandWithTimeout(nodeID, "ConfigureMaskSite", payload, 6*time.Minute, false, false)
-	if err != nil {
-		_ = h.repo.UpdateTunnelMaskStatus(outNode.Mask.TunnelID, "error", err.Error())
-		return err
-	}
-	_ = h.repo.UpdateTunnelMaskStatus(outNode.Mask.TunnelID, "active", "")
-	return nil
 }
 
 func (h *Handler) removeTunnelMaskSite(nodeID, tunnelID int64) {

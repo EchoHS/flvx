@@ -57,6 +57,12 @@ func TestReconstructTunnelState_PreservesConnectIP(t *testing.T) {
 	`).Error; err != nil {
 		t.Fatalf("insert exit chain: %v", err)
 	}
+	if err := r.DB().Exec(`
+		INSERT INTO tunnel_mask_config(tunnel_id, enabled, domain, ws_path, site_repo, site_dir, acme_email, inner_port, status, last_error, created_time, updated_time)
+		VALUES(1, 1, 'mask.example.com', '/ws', 'https://example.com/site.git', '/var/www/mask', 'admin@example.com', 24443, 'active', '', ?, ?)
+	`, now, now).Error; err != nil {
+		t.Fatalf("insert mask config: %v", err)
+	}
 
 	state, err := h.reconstructTunnelState(1)
 	if err != nil {
@@ -75,5 +81,11 @@ func TestReconstructTunnelState_PreservesConnectIP(t *testing.T) {
 	}
 	if got := state.OutNodes[0].ConnectIP; got != "10.99.9.33" {
 		t.Fatalf("expected exit connectIp 10.99.9.33, got %q", got)
+	}
+	if state.MaskConfig == nil || state.MaskConfig.Domain != "mask.example.com" {
+		t.Fatalf("expected reconstructed mask config, got %+v", state.MaskConfig)
+	}
+	if state.OutNodes[0].Mask == nil || state.OutNodes[0].Mask.WSPath != "/ws" {
+		t.Fatalf("expected mask config attached to exit runtime node, got %+v", state.OutNodes[0].Mask)
 	}
 }

@@ -704,27 +704,26 @@ func (h *Handler) redeployNodeRuntimeAfterUpgrade(nodeID int64) bool {
 		return false
 	}
 
-	// First pass: deploy everything
 	tunnelFailed := make(map[int64]struct{})
+	processedTunnels := make(map[int64]struct{}, len(tunnelIDs))
 	for _, tunnelID := range tunnelIDs {
-		if err := h.redeployTunnelAndForwards(tunnelID); err != nil {
+		processedTunnels[tunnelID] = struct{}{}
+		if err := h.redeployTunnelAndForwardsOnNode(tunnelID, nodeID); err != nil {
 			tunnelFailed[tunnelID] = struct{}{}
 			fmt.Printf("post-upgrade redeploy: tunnel %d failed on node %d: %v\n", tunnelID, nodeID, err)
 		}
 	}
 
-	// Collect forwards that failed independently (not skipped due to tunnel failure)
 	var failedForwards []failedForward
-
 	for _, forwardID := range forwardIDs {
 		forward, getErr := h.getForwardRecord(forwardID)
 		if getErr != nil || forward == nil {
 			continue
 		}
-		if _, skipped := tunnelFailed[forward.TunnelID]; skipped {
+		if _, handledWithTunnel := processedTunnels[forward.TunnelID]; handledWithTunnel {
 			continue
 		}
-		if err := h.syncForwardServices(forward, "UpdateService", true); err != nil {
+		if _, err := h.syncForwardServicesOnNodesWithWarnings(forward, "UpdateService", true, []int64{nodeID}); err != nil {
 			failedForwards = append(failedForwards, failedForward{id: forwardID, forward: forward, err: err})
 			fmt.Printf("post-upgrade redeploy: forward %d failed on node %d: %v\n", forwardID, nodeID, err)
 		}
@@ -764,9 +763,8 @@ func (h *Handler) retryFailedRedeploys(nodeID int64, tunnelFailed map[int64]stru
 		delay := baseDelay * time.Duration(1<<uint(attempt-1)) // 1s, 2s, 4s
 		time.Sleep(delay)
 
-		// Retry failed tunnels
 		for tunnelID := range tunnelFailed {
-			if err := h.redeployTunnelAndForwards(tunnelID); err == nil {
+			if err := h.redeployTunnelAndForwardsOnNode(tunnelID, nodeID); err == nil {
 				delete(tunnelFailed, tunnelID)
 				fmt.Printf("post-upgrade redeploy retry: tunnel %d succeeded on node %d (attempt %d)\n", tunnelID, nodeID, attempt)
 			} else if !isRetryableError(err) {
@@ -776,14 +774,13 @@ func (h *Handler) retryFailedRedeploys(nodeID int64, tunnelFailed map[int64]stru
 			}
 		}
 
-		// Retry failed forwards
 		var stillFailed []failedForward
 		for _, ff := range failedForwards {
 			if _, skipped := tunnelFailed[ff.forward.TunnelID]; skipped {
 				stillFailed = append(stillFailed, ff) // Tunnel still failed, skip forward
 				continue
 			}
-			if err := h.syncForwardServices(ff.forward, "UpdateService", true); err == nil {
+			if _, err := h.syncForwardServicesOnNodesWithWarnings(ff.forward, "UpdateService", true, []int64{nodeID}); err == nil {
 				fmt.Printf("post-upgrade redeploy retry: forward %d succeeded on node %d (attempt %d)\n", ff.id, nodeID, attempt)
 			} else if !isRetryableError(err) {
 				// Non-retryable, drop it

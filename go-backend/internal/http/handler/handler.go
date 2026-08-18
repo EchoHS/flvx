@@ -55,6 +55,9 @@ type Handler struct {
 	nodeOnlineRedeployQueued map[int64]struct{}
 	nodeOnlineRedeploying    map[int64]struct{}
 
+	tunnelRuntimeLocksMu sync.Mutex
+	tunnelRuntimeLocks   map[int64]*sync.Mutex
+
 	qualityProber *tunnelQualityProber
 	bestExit      *bestExitManager
 }
@@ -117,6 +120,7 @@ func New(repo *repo.Repository, jwtSecret string) *Handler {
 		nodeOnlineRedeployAt:     make(map[int64]time.Time),
 		nodeOnlineRedeployQueued: make(map[int64]struct{}),
 		nodeOnlineRedeploying:    make(map[int64]struct{}),
+		tunnelRuntimeLocks:       make(map[int64]*sync.Mutex),
 		bestExit:                 newBestExitManager(),
 	}
 	h.healthCheck = health.NewChecker(repo, h.wsServer)
@@ -142,6 +146,25 @@ func New(repo *repo.Repository, jwtSecret string) *Handler {
 	})
 	h.wsServer.SetUserAuthStateLookup(h.GetUserAuthState)
 	return h
+}
+
+func (h *Handler) lockTunnelRuntime(tunnelID int64) func() {
+	if h == nil || tunnelID <= 0 {
+		return func() {}
+	}
+	h.tunnelRuntimeLocksMu.Lock()
+	if h.tunnelRuntimeLocks == nil {
+		h.tunnelRuntimeLocks = make(map[int64]*sync.Mutex)
+	}
+	mu := h.tunnelRuntimeLocks[tunnelID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		h.tunnelRuntimeLocks[tunnelID] = mu
+	}
+	h.tunnelRuntimeLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (h *Handler) WebSocketHandler() http.Handler {
