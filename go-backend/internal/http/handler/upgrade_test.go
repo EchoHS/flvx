@@ -12,7 +12,7 @@ func TestStartNodeOnlineRedeploySkipsRecentReconnects(t *testing.T) {
 		nodeOnlineRedeployQueued: map[int64]struct{}{},
 		nodeOnlineRedeploying:    map[int64]struct{}{},
 	}
-	now := time.Unix(1_777_176_720, 0)
+	now := time.Now().Add(time.Hour)
 
 	if !h.startNodeOnlineRedeploy(54, now) {
 		t.Fatalf("expected first reconnect to redeploy")
@@ -34,7 +34,7 @@ func TestStartNodeOnlineRedeployAllowsPendingUpgradeDuringCooldown(t *testing.T)
 		nodeOnlineRedeployQueued: map[int64]struct{}{},
 		nodeOnlineRedeploying:    map[int64]struct{}{},
 	}
-	now := time.Unix(1_777_176_720, 0)
+	now := time.Now().Add(time.Hour)
 
 	if !h.startNodeOnlineRedeploy(54, now) {
 		t.Fatalf("expected first reconnect to redeploy")
@@ -57,7 +57,7 @@ func TestStartNodeOnlineRedeployQueuesCooldownReconnect(t *testing.T) {
 		nodeOnlineRedeployQueued: map[int64]struct{}{},
 		nodeOnlineRedeploying:    map[int64]struct{}{},
 	}
-	now := time.Unix(1_777_176_720, 0)
+	now := time.Now().Add(time.Hour)
 
 	if !h.startNodeOnlineRedeploy(54, now) {
 		t.Fatalf("expected first reconnect to redeploy")
@@ -79,7 +79,7 @@ func TestStartNodeOnlineRedeployKeepsPendingUpgradeWhileInFlight(t *testing.T) {
 		nodeOnlineRedeployQueued: map[int64]struct{}{},
 		nodeOnlineRedeploying:    map[int64]struct{}{},
 	}
-	now := time.Unix(1_777_176_720, 0)
+	now := time.Now().Add(time.Hour)
 
 	if !h.startNodeOnlineRedeploy(54, now) {
 		t.Fatalf("expected first reconnect to redeploy")

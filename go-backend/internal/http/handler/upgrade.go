@@ -708,7 +708,7 @@ func (h *Handler) redeployNodeRuntimeAfterUpgrade(nodeID int64) bool {
 	processedTunnels := make(map[int64]struct{}, len(tunnelIDs))
 	for _, tunnelID := range tunnelIDs {
 		processedTunnels[tunnelID] = struct{}{}
-		if err := h.redeployTunnelAndForwardsOnNode(tunnelID, nodeID); err != nil {
+		if err := h.reconcileTunnelAndForwards(tunnelID, nodeID); err != nil {
 			tunnelFailed[tunnelID] = struct{}{}
 			fmt.Printf("post-upgrade redeploy: tunnel %d failed on node %d: %v\n", tunnelID, nodeID, err)
 		}
@@ -723,7 +723,7 @@ func (h *Handler) redeployNodeRuntimeAfterUpgrade(nodeID int64) bool {
 		if _, handledWithTunnel := processedTunnels[forward.TunnelID]; handledWithTunnel {
 			continue
 		}
-		if _, err := h.syncForwardServicesOnNodesWithWarnings(forward, "UpdateService", true, []int64{nodeID}); err != nil {
+		if err := h.syncForwardServices(forward, "UpdateService", true); err != nil {
 			failedForwards = append(failedForwards, failedForward{id: forwardID, forward: forward, err: err})
 			fmt.Printf("post-upgrade redeploy: forward %d failed on node %d: %v\n", forwardID, nodeID, err)
 		}
@@ -764,7 +764,7 @@ func (h *Handler) retryFailedRedeploys(nodeID int64, tunnelFailed map[int64]stru
 		time.Sleep(delay)
 
 		for tunnelID := range tunnelFailed {
-			if err := h.redeployTunnelAndForwardsOnNode(tunnelID, nodeID); err == nil {
+			if err := h.reconcileTunnelAndForwards(tunnelID, nodeID); err == nil {
 				delete(tunnelFailed, tunnelID)
 				fmt.Printf("post-upgrade redeploy retry: tunnel %d succeeded on node %d (attempt %d)\n", tunnelID, nodeID, attempt)
 			} else if !isRetryableError(err) {
@@ -780,7 +780,7 @@ func (h *Handler) retryFailedRedeploys(nodeID int64, tunnelFailed map[int64]stru
 				stillFailed = append(stillFailed, ff) // Tunnel still failed, skip forward
 				continue
 			}
-			if _, err := h.syncForwardServicesOnNodesWithWarnings(ff.forward, "UpdateService", true, []int64{nodeID}); err == nil {
+			if err := h.syncForwardServices(ff.forward, "UpdateService", true); err == nil {
 				fmt.Printf("post-upgrade redeploy retry: forward %d succeeded on node %d (attempt %d)\n", ff.id, nodeID, attempt)
 			} else if !isRetryableError(err) {
 				// Non-retryable, drop it
